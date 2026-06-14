@@ -6,7 +6,7 @@
   "request": {
     "transaction_id": "TXN_SRV_SCENARIO_01",
     "pan": "4111111111111111",
-    "amount": 2200,
+    "amount": 7500,
     "currency": "840",
     "mcc": "5411",
     "merchant_name": "Generated Merchant",
@@ -19,6 +19,6 @@
     "forwarding_institution_id": "123456",
     "datetime": "2026-06-14T10:37:27.538118+00:00"
   },
-  "expected_network_response_code": "39",
+  "expected_network_response_code": "05",
   "expected_customer_decision": "DECLINED"
 }
