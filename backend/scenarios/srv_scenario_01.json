@@ -1,0 +1,24 @@
+{
+  "id": "srv_scenario_01",
+  "name": "srv_scenario_01",
+  "description": "Generated authorization for 2200 cents",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_SRV_SCENARIO_01",
+    "pan": "4111111111111111",
+    "amount": 2200,
+    "currency": "840",
+    "mcc": "5411",
+    "merchant_name": "Generated Merchant",
+    "merchant_city": "San Francisco",
+    "merchant_state": "CA",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM9999",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456",
+    "datetime": "2026-06-14T10:37:27.538118+00:00"
+  },
+  "expected_network_response_code": "39",
+  "expected_customer_decision": "DECLINED"
+}

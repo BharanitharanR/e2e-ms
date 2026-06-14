@@ -1,0 +1,66 @@
+# e2e-marqeta-simulator/docker-compose.yml
+# (the obsolete top-level `version:` key is intentionally omitted)
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ACQUIRER_URL=http://acquirer:8101/authorize
+      - CUSTOMER_JIT_RESET_URL=http://customer_jit:8001/reset
+    depends_on:
+      - acquirer
+      - customer_jit
+
+  acquirer:
+    build:
+      context: .
+      dockerfile: Dockerfile.acquirer
+    ports:
+      - "8101:8101"
+    environment:
+      - VISA_URL=http://visa:8102/network/authorize
+    depends_on:
+      - visa
+
+  visa:
+    build:
+      context: .
+      dockerfile: Dockerfile.visa
+    ports:
+      - "8102:8102"
+    environment:
+      - MARQETA_URL=http://marqeta_simulator:8103/issuer/authorize
+    depends_on:
+      - marqeta_simulator
+
+  marqeta_simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.marqeta_simulator
+    ports:
+      - "8103:8103"
+    environment:
+      - CUSTOMER_JIT_URL=http://customer_jit:8001/jit/authorize
+    depends_on:
+      - customer_jit
+
+  customer_jit:
+    build:
+      context: .
+      dockerfile: Dockerfile.customer_jit
+    ports:
+      - "8001:8001"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://backend:8000
+    depends_on:
+      - backend

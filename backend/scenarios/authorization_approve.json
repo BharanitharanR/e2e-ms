@@ -1,0 +1,24 @@
+{
+  "id": "auth_approve_01",
+  "name": "Standard Purchase - Approve",
+  "description": "$25 grocery purchase that should be approved by customer",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_AUTH_001",
+    "pan": "4111111111111111",
+    "amount": 2500,
+    "currency": "840",
+    "mcc": "5411",
+    "merchant_name": "Test Grocery",
+    "merchant_city": "San Francisco",
+    "merchant_state": "CA",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM0001",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456",
+    "datetime": "2026-06-14T12:00:00Z"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
+}

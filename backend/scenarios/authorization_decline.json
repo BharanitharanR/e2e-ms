@@ -1,0 +1,24 @@
+{
+  "id": "auth_decline_01",
+  "name": "High Value Purchase - Decline",
+  "description": "$75 purchase exceeding $50 limit, should decline",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_AUTH_002",
+    "pan": "4111111111111111",
+    "amount": 7500,
+    "currency": "840",
+    "mcc": "5411",
+    "merchant_name": "Test Electronics",
+    "merchant_city": "New York",
+    "merchant_state": "NY",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM0002",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456",
+    "datetime": "2026-06-14T12:05:00Z"
+  },
+  "expected_network_response_code": "05",
+  "expected_customer_decision": "DECLINED"
+}

@@ -1,0 +1,9 @@
+# e2e-marqeta-simulator/Dockerfile.marqeta_simulator
+FROM python:3.10-slim
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+# models.py is needed for NetworkAuthRequest/Response; payload_templates for webhooks.
+COPY backend/marqeta_simulator.py backend/payload_templates.py backend/models.py ./
+EXPOSE 8103
+CMD ["uvicorn", "marqeta_simulator:app", "--host", "0.0.0.0", "--port", "8103"]

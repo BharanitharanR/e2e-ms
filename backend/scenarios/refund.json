@@ -1,0 +1,25 @@
+{
+  "id": "refund_01",
+  "name": "Refund of a Purchase",
+  "description": "Full refund of previous transaction",
+  "event_type": "refund",
+  "original_transaction_id": "TXN_AUTH_001",
+  "request": {
+    "transaction_id": "TXN_REFUND_001",
+    "pan": "4111111111111111",
+    "amount": 2500,
+    "currency": "840",
+    "mcc": "5411",
+    "merchant_name": "Test Grocery",
+    "merchant_city": "San Francisco",
+    "merchant_state": "CA",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM0001",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456",
+    "datetime": "2026-06-15T10:00:00Z"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
+}
