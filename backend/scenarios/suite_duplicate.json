@@ -1,0 +1,28 @@
+{
+  "id": "suite_duplicate",
+  "name": "Duplicate Transaction - DUPLICATE",
+  "description": "Same transaction_id sent twice; second should return DUPLICATE (409)",
+  "event_type": "authorization",
+  "suite_flags": {
+    "force_unique": false,
+    "run_count": 2,
+    "expect_second_decision": "DUPLICATE"
+  },
+  "request": {
+    "transaction_id": "TXN_SUITE_DUP_FIXED",
+    "pan": "4111111111111111",
+    "amount": 1500,
+    "currency": "840",
+    "mcc": "5411",
+    "merchant_name": "Dup Test Store",
+    "merchant_city": "Portland",
+    "merchant_state": "OR",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM1010",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "05",
+  "expected_customer_decision": "DUPLICATE"
+}

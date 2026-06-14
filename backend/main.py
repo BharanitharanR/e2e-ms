@@ -20,6 +20,18 @@ try:
 except ImportError:  # pragma: no cover
     from terminal import Terminal
 
+# Suite catalogue (Enhancement 2).
+try:
+    from backend.suites import SUITES
+except ImportError:
+    from suites import SUITES
+
+# Chip/NFC card emulator (Enhancement 3).
+try:
+    from backend.chip_terminal import SoftwareCardEmulator
+except ImportError:
+    from chip_terminal import SoftwareCardEmulator
+
 ACQUIRER_URL = os.getenv("ACQUIRER_URL", "http://acquirer:8101/authorize")
 CUSTOMER_JIT_RESET_URL = os.getenv("CUSTOMER_JIT_RESET_URL", "http://customer_jit:8001/reset")
 SCENARIOS_DIR = os.path.join(os.path.dirname(__file__), "scenarios")
@@ -28,6 +40,9 @@ app = FastAPI(title="Marqeta E2E Simulator Orchestrator")
 
 # Rolling in-memory execution history (most recent last).
 HISTORY = []
+
+# Module-level chip card emulator singleton.
+_chip_emulator = SoftwareCardEmulator()
 
 
 # --------------------------------------------------------------------------- #
@@ -63,32 +78,10 @@ def _startup():
 
 
 # --------------------------------------------------------------------------- #
-# Endpoints
+# Core execution helper (shared by /execute and /execute_suite)
 # --------------------------------------------------------------------------- #
-@app.get("/health")
-async def health():
-    return {"status": "ok", "service": "orchestrator"}
-
-
-@app.get("/scenarios")
-async def list_scenarios():
-    return [
-        {
-            "id": s.get("id"),
-            "name": s.get("name"),
-            "description": s.get("description"),
-            "event_type": s.get("event_type", "authorization"),
-        }
-        for s in _read_scenarios()
-    ]
-
-
-@app.post("/execute/{scenario_id}")
-async def execute(scenario_id: str, unique: bool = True):
-    scenario = _find_scenario(scenario_id)
-    if scenario is None:
-        return {"error": f"scenario '{scenario_id}' not found"}
-
+def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
+    """Run a scenario dict end-to-end and return a trace dict."""
     event_type = scenario.get("event_type", "authorization")
     base_request = dict(scenario.get("request", {}))
 
@@ -247,6 +240,183 @@ async def execute(scenario_id: str, unique: bool = True):
     HISTORY.append(trace)
     del HISTORY[:-100]  # keep last 100
     return trace
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints
+# --------------------------------------------------------------------------- #
+@app.get("/health")
+async def health():
+    return {"status": "ok", "service": "orchestrator"}
+
+
+@app.get("/scenarios")
+async def list_scenarios():
+    return [
+        {
+            "id": s.get("id"),
+            "name": s.get("name"),
+            "description": s.get("description"),
+            "event_type": s.get("event_type", "authorization"),
+        }
+        for s in _read_scenarios()
+    ]
+
+
+@app.post("/execute/{scenario_id}")
+async def execute(scenario_id: str, unique: bool = True):
+    scenario = _find_scenario(scenario_id)
+    if scenario is None:
+        return {"error": f"scenario '{scenario_id}' not found"}
+    return _execute_scenario_internal(scenario, unique=unique)
+
+
+@app.get("/suites")
+async def list_suites():
+    """Return the suite catalogue with scenario counts."""
+    return [
+        {
+            "key": k,
+            "name": v["name"],
+            "scenario_count": len(v["scenario_ids"]),
+            "scenario_ids": v["scenario_ids"],
+        }
+        for k, v in SUITES.items()
+    ]
+
+
+@app.post("/execute_suite")
+async def execute_suite(request: Request):
+    """Run a named suite (or a custom list of scenario IDs) and return a suite result."""
+    body = await request.json()
+    suite_key = body.get("suite_name", "full_regression")
+    scenario_ids = body.get("scenario_ids") or SUITES.get(suite_key, {}).get("scenario_ids", [])
+    suite_display_name = SUITES.get(suite_key, {}).get("name", suite_key)
+
+    # Optionally reset customer JIT state before suite run.
+    if body.get("reset_before", True):
+        try:
+            requests.post(CUSTOMER_JIT_RESET_URL, timeout=5)
+        except requests.RequestException:
+            pass
+
+    run_at = datetime.now(timezone.utc).isoformat()
+    suite_start = time.perf_counter()
+    results = []
+
+    for sid in scenario_ids:
+        scenario = _find_scenario(sid)
+        if scenario is None:
+            results.append({
+                "scenario_id": sid,
+                "name": sid,
+                "passed": False,
+                "error": "not found",
+                "duration_ms": 0,
+                "expected_network_response_code": None,
+                "actual_network_response_code":   None,
+                "expected_customer_decision":     None,
+                "actual_customer_decision":       None,
+                "audit_trail": [],
+            })
+            continue
+
+        suite_flags = scenario.get("suite_flags", {})
+        run_count    = suite_flags.get("run_count", 1)
+        force_unique = suite_flags.get("force_unique", True)
+        expect_second = suite_flags.get("expect_second_decision")
+
+        per_run = []
+        for run_num in range(run_count):
+            is_unique = force_unique if run_num == 0 else False
+            per_run.append(_execute_scenario_internal(scenario, unique=is_unique))
+
+        # For duplicate scenarios: first run must pass AND second must match the
+        # expected second-run decision (e.g. DUPLICATE).
+        if run_count == 2 and expect_second:
+            passed = (
+                per_run[0].get("passed") and
+                per_run[1].get("actual_customer_decision") == expect_second
+            )
+            primary = per_run[1]
+        else:
+            primary = per_run[-1]
+            passed = primary.get("passed", False)
+
+        results.append({
+            "scenario_id": sid,
+            "name": scenario.get("name"),
+            "passed": passed,
+            "expected_network_response_code": primary.get("expected_network_response_code"),
+            "actual_network_response_code":   primary.get("actual_network_response_code"),
+            "expected_customer_decision":     primary.get("expected_customer_decision"),
+            "actual_customer_decision":       primary.get("actual_customer_decision"),
+            "duration_ms": primary.get("duration_ms"),
+            "audit_trail": primary.get("audit_trail", []),
+        })
+
+    suite_duration_ms = round((time.perf_counter() - suite_start) * 1000, 2)
+    passed_count = sum(1 for r in results if r.get("passed"))
+
+    suite_result = {
+        "suite_name": suite_display_name,
+        "run_at": run_at,
+        "total": len(results),
+        "passed": passed_count,
+        "failed": len(results) - passed_count,
+        "duration_ms": suite_duration_ms,
+        "results": results,
+    }
+
+    HISTORY.append({
+        "suite_run": True,
+        "suite_name": suite_display_name,
+        "passed": passed_count == len(results),
+        "timestamp": run_at,
+    })
+    del HISTORY[:-100]
+    return suite_result
+
+
+@app.post("/chip/command")
+async def chip_command(request: Request):
+    """Dispatch an APDU command to the software chip card emulator."""
+    body = await request.json()
+    cmd = body.get("command", "").upper()
+
+    dispatch = {
+        "SELECT":      lambda: _chip_emulator.select_application(
+                           aid=body.get("aid", "A0000000031010")),
+        "GET_DATA":    lambda: _chip_emulator.get_data(
+                           tag=body.get("tag", "5A")),
+        "VERIFY":      lambda: _chip_emulator.verify_pin(
+                           pin=body.get("pin", "")),
+        "READ_RECORD": lambda: _chip_emulator.read_record(
+                           int(body.get("sfi", 1)), int(body.get("record_num", 1))),
+        "PUT_DATA":    lambda: _chip_emulator.put_data(
+                           body.get("tag", ""), body.get("value", "")),
+        "GENERATE_AC": lambda: _chip_emulator.generate_ac(
+                           body.get("cdol_data", "")),
+        "RESET_CARD":  lambda: (
+                           _chip_emulator.reset_card() or
+                           {"data": "", "sw": "9000", "sw1": "90", "sw2": "00",
+                            "status": "CARD_RESET"}),
+        "GET_STATE":   lambda: {
+                           "data": "", "sw": "9000", "sw1": "90", "sw2": "00",
+                           "status": "OK"},
+    }
+
+    if cmd in dispatch:
+        resp = dispatch[cmd]()
+    else:
+        resp = {
+            "data": "", "sw": "6D00", "sw1": "6D", "sw2": "00",
+            "status": "INSTRUCTION_NOT_SUPPORTED",
+        }
+
+    resp["command"] = cmd
+    resp["card_state"] = _chip_emulator.get_card_state()
+    return resp
 
 
 @app.post("/generate")

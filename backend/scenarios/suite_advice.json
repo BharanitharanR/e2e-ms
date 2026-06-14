@@ -1,0 +1,25 @@
+{
+  "id": "suite_advice",
+  "name": "Clearing Advice - Approve",
+  "description": "Clearing advice for the suite purchase transaction",
+  "event_type": "advice",
+  "advice_type": "CLEARING",
+  "original_transaction_id": "TXN_SUITE_PUR_APR",
+  "request": {
+    "transaction_id": "TXN_SUITE_ADVICE",
+    "pan": "4111111111111111",
+    "amount": 3000,
+    "currency": "840",
+    "mcc": "5411",
+    "merchant_name": "Super Mart",
+    "merchant_city": "Chicago",
+    "merchant_state": "IL",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM1001",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
+}

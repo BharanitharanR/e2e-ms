@@ -1,0 +1,23 @@
+{
+  "id": "suite_purchase_approve",
+  "name": "Purchase - Standard Approve",
+  "description": "$30 retail purchase, within $50 limit — should approve",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_SUITE_PUR_APR",
+    "pan": "4111111111111111",
+    "amount": 3000,
+    "currency": "840",
+    "mcc": "5411",
+    "merchant_name": "Super Mart",
+    "merchant_city": "Chicago",
+    "merchant_state": "IL",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM1001",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
+}

@@ -1,0 +1,23 @@
+{
+  "id": "suite_atm_approve",
+  "name": "ATM Withdrawal - Approve",
+  "description": "$40 ATM cash withdrawal within limit, MCC 6011",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_SUITE_ATM_APR",
+    "pan": "4111111111111111",
+    "amount": 4000,
+    "currency": "840",
+    "mcc": "6011",
+    "merchant_name": "First National ATM",
+    "merchant_city": "Dallas",
+    "merchant_state": "TX",
+    "merchant_country": "USA",
+    "pos_entry_mode": "011",
+    "terminal_id": "ATM00001",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
+}

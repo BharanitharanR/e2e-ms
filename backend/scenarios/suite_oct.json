@@ -1,0 +1,26 @@
+{
+  "id": "suite_oct",
+  "name": "OCT Push Payment - Approve",
+  "description": "Original Credit Transaction — push payment to card (MCC 6012)",
+  "event_type": "authorization",
+  "webhook_overrides": {
+    "transaction.type": "original_credit"
+  },
+  "request": {
+    "transaction_id": "TXN_SUITE_OCT",
+    "pan": "4111111111111111",
+    "amount": 2500,
+    "currency": "840",
+    "mcc": "6012",
+    "merchant_name": "PaySender Inc",
+    "merchant_city": "Miami",
+    "merchant_state": "FL",
+    "merchant_country": "USA",
+    "pos_entry_mode": "000",
+    "terminal_id": "TERM1007",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
+}

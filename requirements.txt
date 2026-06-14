@@ -4,3 +4,5 @@ pydantic
 requests
 streamlit
 python-multipart
+pandas
+jinja2

@@ -1,0 +1,23 @@
+{
+  "id": "suite_multicurrency_eur",
+  "name": "Multi-Currency EUR - Approve",
+  "description": "EUR 25 purchase (currency 978) in France — within limit, should approve",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_SUITE_EUR",
+    "pan": "4111111111111111",
+    "amount": 2500,
+    "currency": "978",
+    "mcc": "5812",
+    "merchant_name": "Paris Bistro",
+    "merchant_city": "Paris",
+    "merchant_state": "",
+    "merchant_country": "FRA",
+    "pos_entry_mode": "071",
+    "terminal_id": "TERM1013",
+    "acquiring_institution_id": "789012",
+    "forwarding_institution_id": "789012"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
+}

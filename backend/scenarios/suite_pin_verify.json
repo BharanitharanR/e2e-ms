@@ -1,0 +1,26 @@
+{
+  "id": "suite_pin_verify",
+  "name": "PIN Verification - Approve",
+  "description": "Chip+PIN authorization (pos_entry_mode 021), $10 within limit",
+  "event_type": "authorization",
+  "webhook_overrides": {
+    "transaction.pos.pin_present": true
+  },
+  "request": {
+    "transaction_id": "TXN_SUITE_PIN",
+    "pan": "4111111111111111",
+    "amount": 1000,
+    "currency": "840",
+    "mcc": "5411",
+    "merchant_name": "PIN Terminal Store",
+    "merchant_city": "Seattle",
+    "merchant_state": "WA",
+    "merchant_country": "USA",
+    "pos_entry_mode": "021",
+    "terminal_id": "TERM1005",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
+}

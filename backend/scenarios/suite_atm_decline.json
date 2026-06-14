@@ -1,0 +1,23 @@
+{
+  "id": "suite_atm_decline",
+  "name": "ATM Withdrawal - Decline",
+  "description": "$200 ATM cash withdrawal exceeds limit",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_SUITE_ATM_DEC",
+    "pan": "4111111111111111",
+    "amount": 20000,
+    "currency": "840",
+    "mcc": "6011",
+    "merchant_name": "City Bank ATM",
+    "merchant_city": "Houston",
+    "merchant_state": "TX",
+    "merchant_country": "USA",
+    "pos_entry_mode": "011",
+    "terminal_id": "ATM00002",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "05",
+  "expected_customer_decision": "DECLINED"
+}

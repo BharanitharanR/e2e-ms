@@ -1,0 +1,23 @@
+{
+  "id": "suite_preauth",
+  "name": "Pre-Auth AFD (Fuel) - Approve",
+  "description": "$1 fuel pre-authorization hold at automated fuel dispenser (MCC 5542)",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_SUITE_PREAUTH",
+    "pan": "4111111111111111",
+    "amount": 100,
+    "currency": "840",
+    "mcc": "5542",
+    "merchant_name": "Shell Station",
+    "merchant_city": "Phoenix",
+    "merchant_state": "AZ",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM1006",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
+}

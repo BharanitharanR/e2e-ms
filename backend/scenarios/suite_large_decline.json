@@ -1,0 +1,23 @@
+{
+  "id": "suite_large_decline",
+  "name": "Large Amount - Decline",
+  "description": "$500 transaction well above $50 limit — must decline",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_SUITE_LARGE",
+    "pan": "4111111111111111",
+    "amount": 50000,
+    "currency": "840",
+    "mcc": "5311",
+    "merchant_name": "Mega Electronics",
+    "merchant_city": "San Jose",
+    "merchant_state": "CA",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM1012",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "05",
+  "expected_customer_decision": "DECLINED"
+}
