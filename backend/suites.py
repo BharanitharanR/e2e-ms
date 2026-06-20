@@ -55,4 +55,19 @@ SUITES = {
             "suite_multicurrency_eur",
         ],
     },
+    "rc_coverage": {
+        "name": "RC Coverage Suite",
+        "scenario_ids": [
+            "rc_51_insufficient_funds",
+            "rc_57_txn_not_permitted",
+            "rc_65_velocity_exceeded",
+            "suite_purchase_approve",
+            "suite_purchase_decline",
+            "suite_atm_approve",
+            "suite_atm_decline",
+            "suite_refund",
+            "suite_advice",
+            "suite_reversal",
+        ],
+    },
 }

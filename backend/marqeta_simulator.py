@@ -74,9 +74,17 @@ async def issuer_authorize(request: Request):
         customer_body = {"error": str(e)}
         decision = "ERROR"
 
+    # Map customer JIT decision → ISO 8583 response code.
+    # If the JIT service returns a specific "rc" field, honour it (enables
+    # RC 51, 57, 61, 65, 76 etc.). Otherwise fall back to 00/05.
+    if decision == "APPROVED":
+        iso_rc = "00"
+    else:
+        iso_rc = customer_body.get("rc") or "05"
+
     response = NetworkAuthResponse(
         transaction_id=req.transaction_id,
-        response_code="00" if decision == "APPROVED" else "05",
+        response_code=iso_rc,
         auth_code="ABC123" if decision == "APPROVED" else None,
         customer_decision=decision,
         customer_status_code=status_code,
