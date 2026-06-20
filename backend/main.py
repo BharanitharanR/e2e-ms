@@ -113,10 +113,31 @@ def _read_scenarios():
     return scenarios
 
 
-def _find_scenario(scenario_id):
+def _find_scenario(
+    scenario_id
+):
+
+    scenario = get_scenario_by_id(
+        scenario_id
+    )
+
+    if scenario:
+        return scenario
+
     for s in _read_scenarios():
-        if s.get("id") == scenario_id or s.get("_file", "").rstrip(".json") == scenario_id:
+
+        if (
+            s.get("id") == scenario_id
+            or
+            s.get(
+                "_file",
+                ""
+            ).rstrip(
+                ".json"
+            ) == scenario_id
+        ):
             return s
+
     return None
 
 
