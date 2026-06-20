@@ -91,6 +91,7 @@ _chip_emulator = SoftwareCardEmulator()
 # --------------------------------------------------------------------------- #
 @app.on_event("startup")
 def _startup():
+    print("=== STARTUP HOOK CALLED ===")
     os.makedirs(SCENARIOS_DIR, exist_ok=True)
     init_db()
     bootstrap()

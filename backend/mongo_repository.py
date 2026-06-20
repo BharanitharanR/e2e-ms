@@ -52,9 +52,14 @@ def get_scenario_by_id(scenario_id):
 
 def save_scenario(doc):
 
+    print("================================")
+    print("SAVE_SCENARIO CALLED")
+    print(type(doc))
+    print(repr(doc))
+    print("================================")
     if "id" not in doc:
         raise ValueError(
-            "Scenario must contain id"
+               f"Scenario must contain id. Actual document = {repr(doc)}"
         )
 
     scenarios.replace_one(

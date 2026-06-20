@@ -1,5 +1,4 @@
 import json
-from backend.mongo_repository import save_scenario
 
 from backend.agent_repository import (
     get_agent,
@@ -11,6 +10,11 @@ from backend.agent_repository import (
 from backend.ollama_client import (
     OllamaClient
 )
+
+from backend.mongo_repository import (
+    save_scenario
+)
+
 
 def build_prompt(
     agent_id,
@@ -25,18 +29,22 @@ def build_prompt(
         agent["prompt_template_id"]
     )
 
-    template = get_template(
-        "default"
-    )
+    template = get_template()
+
+    if template is None:
+
+        raise Exception(
+            "No scenario template found in MongoDB"
+        )
 
     prompt = prompt_doc[
         "template"
     ]
 
     prompt = prompt.replace(
-        "{{schema}}",
+        "{{template}}",
         json.dumps(
-            template["schema"],
+            template,
             indent=2
         )
     )
@@ -50,6 +58,9 @@ def build_prompt(
         agent,
         prompt
     )
+
+import time
+
 
 def execute_agent(
     agent_id,
@@ -68,8 +79,17 @@ def execute_agent(
         prompt=prompt
     )
 
+    print("GENERATED:")
+    print(generated)
+
+    if not generated.get("id"):
+
+        generated["id"] = (
+            f"gen_{int(time.time())}"
+        )
+
     save_scenario(
         generated
     )
-    print("SAVED TO MONGO")
+
     return generated

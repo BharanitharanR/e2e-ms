@@ -25,9 +25,9 @@ def get_guardrail(guardrail_id):
     )
 
 
-def get_template(template_id):
+def get_template():
 
     return db.scenario_templates.find_one(
-        {"_id": template_id},
+        {},
         {"_id": 0}
     )
