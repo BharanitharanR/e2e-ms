@@ -1,5 +1,6 @@
 import json
 import requests
+import uuid
 
 
 class OllamaClient:
@@ -11,27 +12,33 @@ class OllamaClient:
     def generate(self, user_prompt):
 
         prompt = f"""
+You generate payment simulator scenarios.
+
 Return ONLY valid JSON.
 
-Schema:
+No markdown.
+No explanations.
+No code blocks.
+
+Required schema:
 
 {{
-  "id":"",
-  "name":"",
-  "description":"",
-  "event_type":"authorization",
-  "request":{{
-    "transaction_id":"",
-    "pan":"",
-    "amount":0,
-    "mcc":"",
-    "merchant_name":"",
-    "merchant_country":"",
-    "pos_entry_mode":"",
-    "terminal_id":""
+  "id": "generated_id",
+  "name": "Scenario Name",
+  "description": "Description",
+  "event_type": "authorization",
+  "request": {{
+    "transaction_id": "TXN001",
+    "pan": "4111111111111111",
+    "amount": 2500,
+    "mcc": "5411",
+    "merchant_name": "Merchant",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM0001"
   }},
-  "expected_network_response_code":"00",
-  "expected_customer_decision":"APPROVED"
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
 }}
 
 User Request:
@@ -41,19 +48,25 @@ User Request:
         payload = {
             "model": self.model,
             "prompt": prompt,
+            "format": "json",
             "stream": False
         }
 
         response = requests.post(
             self.base_url,
             json=payload,
-            timeout=60
+            timeout=120
         )
 
         response.raise_for_status()
 
         result = response.json()
 
-        return json.loads(
+        scenario = json.loads(
             result["response"]
         )
+
+        if not scenario.get("id"):
+            scenario["id"] = str(uuid.uuid4())
+
+        return scenario

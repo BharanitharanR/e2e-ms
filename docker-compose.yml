@@ -74,6 +74,13 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
-
+  mongodb:
+    image: mongo:7
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
 volumes:
   ollama_data:
+  mongo_data:

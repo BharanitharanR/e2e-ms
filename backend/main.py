@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 import requests
 from fastapi import FastAPI, Request
 import uvicorn
+from pymongo import MongoClient
+
 
 # Terminal lives in the same `backend` folder; support both run styles.
 try:
@@ -38,6 +40,12 @@ SCENARIOS_DIR = os.path.join(os.path.dirname(__file__), "scenarios")
 
 app = FastAPI(title="Marqeta E2E Simulator Orchestrator")
 
+mongo = MongoClient("mongodb://mongodb:27017")
+
+mongo_db = mongo["payment_simulator"]
+
+mongo_scenarios = mongo_db["scenarios"]
+
 # Rolling in-memory execution history (most recent last).
 HISTORY = []
 
@@ -62,9 +70,24 @@ def _read_scenarios():
 
 
 def _find_scenario(scenario_id):
+
+    # Search built-in JSON scenarios first
     for s in _read_scenarios():
-        if s.get("id") == scenario_id or s.get("_file", "").rstrip(".json") == scenario_id:
+        if (
+            s.get("id") == scenario_id
+            or s.get("_file", "").rstrip(".json") == scenario_id
+        ):
             return s
+
+    # Search Mongo-generated scenarios
+    mongo_doc = mongo_scenarios.find_one(
+        {"id": scenario_id},
+        {"_id": 0}
+    )
+
+    if mongo_doc:
+        return mongo_doc
+
     return None
 
 
@@ -252,15 +275,45 @@ async def health():
 
 @app.get("/scenarios")
 async def list_scenarios():
-    return [
+
+    file_scenarios = [
         {
             "id": s.get("id"),
             "name": s.get("name"),
             "description": s.get("description"),
             "event_type": s.get("event_type", "authorization"),
+            "source": "builtin",
         }
         for s in _read_scenarios()
     ]
+
+    mongo_results = list(
+        mongo_scenarios.find(
+            {},
+            {
+                "_id": 0,
+                "id": 1,
+                "name": 1,
+                "description": 1,
+                "event_type": 1,
+            },
+        )
+    )
+
+    mongo_scenarios_list = []
+
+    for s in mongo_results:
+        mongo_scenarios_list.append(
+            {
+                "id": s.get("id"),
+                "name": s.get("name"),
+                "description": s.get("description"),
+                "event_type": s.get("event_type", "authorization"),
+                "source": "ai",
+            }
+        )
+
+    return file_scenarios + mongo_scenarios_list
 
 
 @app.post("/execute/{scenario_id}")

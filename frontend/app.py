@@ -578,30 +578,51 @@ with st.expander("➕ Generate a new scenario"):
     orig_txn = g6.text_input("Original transaction id (advice/refund/reversal)",
                              value="TXN_AUTH_001")
 
-    if st.button("Generate"):
-        payload = {
-    "scenario_id": new_id,
-    "event_type": event_type,
-    "amount": int(amount),
-    "expected_response_code": exp_rc,
-    "expected_customer_decision": exp_dec,
-    "original_transaction_id": orig_txn,
-    "ollama_prompt": st.text_input("Enter prompt for Ollama", key="ollama_prompt"),
-        }
-        res = api_post("/generate", payload)
-        if res:
+    ollama_prompt = st.text_area(
+    "Enter prompt for Ollama",
+    key="ollama_prompt"
+)
+
+if st.button("Generate"):
+
+    payload = {
+        "scenario_id": new_id,
+        "event_type": event_type,
+        "amount": int(amount),
+        "expected_response_code": exp_rc,
+        "expected_customer_decision": exp_dec,
+        "original_transaction_id": orig_txn,
+        "ollama_prompt": ollama_prompt,
+    }
+
+    res = api_post("/generate", payload)
+
+    if res:
         st.success(f"Created {res.get('created')}")
         st.json(res.get("scenario"))
         st.info("Re-open the sidebar dropdown to pick it up.")
-        
-        # Ollama prompt handling
-        if st.session_state.ollama_prompt:
+
+    if ollama_prompt:
+        try:
             response = requests.post(
                 "http://ollama:11434/api/generate",
-                json={"prompt": st.session_state.ollama_prompt, "stream": False}
-            ).json()
-            st.markdown("### 🤖 Ollama Response:")
-            st.markdown(f"**Response:** {response.get('response', 'No response from Ollama')}") 
+                json={
+                    "model": "qwen3:8b",
+                    "prompt": ollama_prompt,
+                    "stream": False,
+                },
+                timeout=120,
+            )
+
+            response.raise_for_status()
+
+            result = response.json()
+
+            st.markdown("### 🤖 Ollama Response")
+            st.json(result)
+
+        except Exception as e:
+            st.error(f"Ollama request failed: {e}")
 
 # --------------------------------------------------------------------------- #
 # History
@@ -863,13 +884,19 @@ with st.expander("📱 NFC / Chip Card Terminal Emulator", expanded=False):
 
 st.markdown("---")
 
-st.subheader("🤖 AI Playground")
+st.subheader("Scenario Generator")
+
+prompt = st.text_area(
+    "Describe a payment scenario",
+    height=150,
+    placeholder="Generate a Visa purchase for CAD 150 in Canada"
+)
 
 if st.button("Generate Scenario"):
 
     try:
 
-        with st.spinner("Generating..."):
+        with st.spinner("Generating scenario..."):
 
             client = OllamaClient()
 
@@ -877,58 +904,10 @@ if st.button("Generate Scenario"):
 
             save_scenario(scenario)
 
-            st.success(
-                "Scenario saved to MongoDB"
-            )
+            st.success("Saves")
 
             st.json(scenario)
 
     except Exception as e:
 
         st.error(str(e))
-
-if "ai_response" not in st.session_state:
-    st.session_state.ai_response = None
-
-prompt = st.text_area(
-    "Prompt",
-    height=150,
-    placeholder="Ask Qwen anything..."
-)
-
-col1, col2 = st.columns([1, 5])
-
-with col1:
-
-    if st.button("Send To AI"):
-
-        if not prompt.strip():
-            st.warning("Please enter a prompt")
-
-        else:
-
-            try:
-
-                with st.spinner("Contacting Ollama..."):
-
-                    client = OllamaClient()
-
-                    st.session_state.ai_response = (
-                        client.generate(prompt)
-                    )
-
-            except Exception as e:
-
-                st.error(str(e))
-
-with col2:
-
-    if st.session_state.ai_response:
-
-        with st.expander(
-            "AI Response",
-            expanded=True
-        ):
-            st.markdown(
-                st.session_state.ai_response
-            )

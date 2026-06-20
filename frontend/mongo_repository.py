@@ -12,7 +12,11 @@ def save_scenario(document):
 
     document["created_at"] = datetime.utcnow()
 
-    scenarios.insert_one(document)
+    scenarios.replace_one(
+        {"id": document["id"]},
+        document,
+        upsert=True
+    )
 
     return document
 

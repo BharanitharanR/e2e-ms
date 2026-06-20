@@ -6,3 +6,4 @@ streamlit
 python-multipart
 pandas
 jinja2
+pymongo==4.8.0
