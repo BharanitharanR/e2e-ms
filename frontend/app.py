@@ -5,6 +5,9 @@ import json
 import time
 import requests
 import streamlit as st
+from ollama_client import OllamaClient
+from mongo_repository import save_scenario
+import json
 
 API_URL = os.getenv("API_URL", "http://backend:8000")
 
@@ -577,18 +580,28 @@ with st.expander("➕ Generate a new scenario"):
 
     if st.button("Generate"):
         payload = {
-            "scenario_id": new_id,
-            "event_type": event_type,
-            "amount": int(amount),
-            "expected_response_code": exp_rc,
-            "expected_customer_decision": exp_dec,
-            "original_transaction_id": orig_txn,
+    "scenario_id": new_id,
+    "event_type": event_type,
+    "amount": int(amount),
+    "expected_response_code": exp_rc,
+    "expected_customer_decision": exp_dec,
+    "original_transaction_id": orig_txn,
+    "ollama_prompt": st.text_input("Enter prompt for Ollama", key="ollama_prompt"),
         }
         res = api_post("/generate", payload)
         if res:
-            st.success(f"Created {res.get('created')}")
-            st.json(res.get("scenario"))
-            st.info("Re-open the sidebar dropdown to pick it up.")
+        st.success(f"Created {res.get('created')}")
+        st.json(res.get("scenario"))
+        st.info("Re-open the sidebar dropdown to pick it up.")
+        
+        # Ollama prompt handling
+        if st.session_state.ollama_prompt:
+            response = requests.post(
+                "http://ollama:11434/api/generate",
+                json={"prompt": st.session_state.ollama_prompt, "stream": False}
+            ).json()
+            st.markdown("### 🤖 Ollama Response:")
+            st.markdown(f"**Response:** {response.get('response', 'No response from Ollama')}") 
 
 # --------------------------------------------------------------------------- #
 # History
@@ -844,3 +857,78 @@ with st.expander("📱 NFC / Chip Card Terminal Emulator", expanded=False):
             )
     else:
         st.caption("No APDU commands sent yet. Use the tabs above to interact with the virtual card.")
+# --------------------------------------------------------------------------- #
+# AI Playground
+# --------------------------------------------------------------------------- #
+
+st.markdown("---")
+
+st.subheader("🤖 AI Playground")
+
+if st.button("Generate Scenario"):
+
+    try:
+
+        with st.spinner("Generating..."):
+
+            client = OllamaClient()
+
+            scenario = client.generate(prompt)
+
+            save_scenario(scenario)
+
+            st.success(
+                "Scenario saved to MongoDB"
+            )
+
+            st.json(scenario)
+
+    except Exception as e:
+
+        st.error(str(e))
+
+if "ai_response" not in st.session_state:
+    st.session_state.ai_response = None
+
+prompt = st.text_area(
+    "Prompt",
+    height=150,
+    placeholder="Ask Qwen anything..."
+)
+
+col1, col2 = st.columns([1, 5])
+
+with col1:
+
+    if st.button("Send To AI"):
+
+        if not prompt.strip():
+            st.warning("Please enter a prompt")
+
+        else:
+
+            try:
+
+                with st.spinner("Contacting Ollama..."):
+
+                    client = OllamaClient()
+
+                    st.session_state.ai_response = (
+                        client.generate(prompt)
+                    )
+
+            except Exception as e:
+
+                st.error(str(e))
+
+with col2:
+
+    if st.session_state.ai_response:
+
+        with st.expander(
+            "AI Response",
+            expanded=True
+        ):
+            st.markdown(
+                st.session_state.ai_response
+            )
