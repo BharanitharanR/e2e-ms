@@ -1,0 +1,24 @@
+{
+  "id": "rc_65_velocity_exceeded",
+  "name": "RC 65 — Exceeds Withdrawal Frequency Limit (Velocity)",
+  "description": "Transaction count per card exceeds VELOCITY_MAX_TXN threshold. Triggers RC 65.",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_RC65_001",
+    "pan": "4111111111111111",
+    "amount": 1000,
+    "currency": "840",
+    "mcc": "5411",
+    "merchant_name": "Safeway",
+    "merchant_city": "Seattle",
+    "merchant_state": "WA",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM0065",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "65",
+  "expected_customer_decision": "DECLINED",
+  "tags": ["rc_coverage", "decline", "velocity"]
+}

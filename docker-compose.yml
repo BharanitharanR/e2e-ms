@@ -10,6 +10,14 @@ services:
     environment:
       - ACQUIRER_URL=http://acquirer:8101/authorize
       - CUSTOMER_JIT_RESET_URL=http://customer_jit:8001/reset
+      - DB_PATH=/data/simulator.db
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CUSTOMER_JIT_URL=http://customer_jit:8001
+      - ACQUIRER_SVC_URL=http://acquirer:8101
+      - VISA_SVC_URL=http://visa:8102
+      - MARQETA_SIM_URL=http://marqeta_simulator:8103
+    volumes:
+      - simulator_data:/data
     depends_on:
       - acquirer
       - customer_jit
@@ -53,6 +61,10 @@ services:
       dockerfile: Dockerfile.customer_jit
     ports:
       - "8001:8001"
+    environment:
+      - BLOCKED_MCCS=${BLOCKED_MCCS:-6011,4829}
+      - DAILY_LIMIT_CENTS=${DAILY_LIMIT_CENTS:-0}
+      - VELOCITY_MAX_TXN=${VELOCITY_MAX_TXN:-0}
 
   frontend:
     build:
@@ -64,3 +76,6 @@ services:
       - API_URL=http://backend:8000
     depends_on:
       - backend
+
+volumes:
+  simulator_data:

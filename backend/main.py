@@ -2,7 +2,7 @@
 """Orchestrator + REST API for the simulator (port 8000).
 
 Owns the scenario catalogue, drives the Terminal -> Acquirer chain, scores the
-result against the scenario's expectations, and keeps a rolling history.
+result against the scenario's expectations, and persists traces to SQLite.
 """
 import os
 import json
@@ -11,7 +11,8 @@ import time
 from datetime import datetime, timezone
 
 import requests
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Query
+from fastapi.responses import Response
 import uvicorn
 
 # Terminal lives in the same `backend` folder; support both run styles.
@@ -20,29 +21,72 @@ try:
 except ImportError:  # pragma: no cover
     from terminal import Terminal
 
-# Suite catalogue (Enhancement 2).
+# Suite catalogue.
 try:
     from backend.suites import SUITES
 except ImportError:
     from suites import SUITES
 
-# Chip/NFC card emulator (Enhancement 3).
+# Chip/NFC card emulator.
 try:
     from backend.chip_terminal import SoftwareCardEmulator
 except ImportError:
     from chip_terminal import SoftwareCardEmulator
 
+# SQLite persistence layer.
+try:
+    from backend.db import (
+        init_db, persist_transaction, persist_suite_run,
+        get_transactions_page, get_recent_transactions,
+        get_suite_runs_page, get_rc_coverage, get_latency_stats,
+        get_daily_trends, list_environments, create_environment,
+        activate_environment, get_active_environment,
+    )
+except ImportError:
+    from db import (
+        init_db, persist_transaction, persist_suite_run,
+        get_transactions_page, get_recent_transactions,
+        get_suite_runs_page, get_rc_coverage, get_latency_stats,
+        get_daily_trends, list_environments, create_environment,
+        activate_environment, get_active_environment,
+    )
+
+# AI routes (optional — gracefully degrade if Anthropic SDK not installed).
+try:
+    try:
+        from backend.ai_routes import ai_router
+    except ImportError:
+        from ai_routes import ai_router
+    _AI_AVAILABLE = True
+except Exception:  # pragma: no cover
+    ai_router = None
+    _AI_AVAILABLE = False
+
 ACQUIRER_URL = os.getenv("ACQUIRER_URL", "http://acquirer:8101/authorize")
 CUSTOMER_JIT_RESET_URL = os.getenv("CUSTOMER_JIT_RESET_URL", "http://customer_jit:8001/reset")
+CUSTOMER_JIT_URL = os.getenv("CUSTOMER_JIT_URL", "http://customer_jit:8001")
+MARQETA_SIM_URL = os.getenv("MARQETA_SIM_URL", "http://marqeta_simulator:8103")
+ACQUIRER_SVC_URL = os.getenv("ACQUIRER_SVC_URL", "http://acquirer:8101")
+VISA_SVC_URL = os.getenv("VISA_SVC_URL", "http://visa:8102")
 SCENARIOS_DIR = os.path.join(os.path.dirname(__file__), "scenarios")
 
 app = FastAPI(title="Marqeta E2E Simulator Orchestrator")
 
-# Rolling in-memory execution history (most recent last).
-HISTORY = []
+# Attach AI routes if available.
+if ai_router is not None:
+    app.include_router(ai_router)
 
 # Module-level chip card emulator singleton.
 _chip_emulator = SoftwareCardEmulator()
+
+
+# --------------------------------------------------------------------------- #
+# Startup
+# --------------------------------------------------------------------------- #
+@app.on_event("startup")
+def _startup():
+    os.makedirs(SCENARIOS_DIR, exist_ok=True)
+    init_db()
 
 
 # --------------------------------------------------------------------------- #
@@ -66,15 +110,6 @@ def _find_scenario(scenario_id):
         if s.get("id") == scenario_id or s.get("_file", "").rstrip(".json") == scenario_id:
             return s
     return None
-
-
-def _ensure_scenarios_dir():
-    os.makedirs(SCENARIOS_DIR, exist_ok=True)
-
-
-@app.on_event("startup")
-def _startup():
-    _ensure_scenarios_dir()
 
 
 # --------------------------------------------------------------------------- #
@@ -128,7 +163,7 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
         {
             "step": 1,
             "actor": "Cardholder Tap",
-            "direction": "\u2192",
+            "direction": "→",
             "label": "Cardholder initiates transaction at merchant terminal",
             "payload": base_request,
             "timestamp": ts_cardholder,
@@ -136,7 +171,7 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
         {
             "step": 2,
             "actor": "Terminal",
-            "direction": "\u2192",
+            "direction": "→",
             "label": "Terminal normalises request and stamps STAN / RRN",
             "payload": request_dict,
             "timestamp": ts_outbound,
@@ -144,7 +179,7 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
         {
             "step": 3,
             "actor": "Acquirer",
-            "direction": "\u2192",
+            "direction": "→",
             "label": "Acquirer forwards ISO-8583 message to Visa network",
             "payload": request_dict,
             "timestamp": ts_outbound,
@@ -152,7 +187,7 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
         {
             "step": 4,
             "actor": "Visa Network",
-            "direction": "\u2192",
+            "direction": "→",
             "label": "Visa network routes authorization request to Marqeta issuer processor",
             "payload": request_dict,
             "timestamp": ts_outbound,
@@ -160,9 +195,11 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
         {
             "step": 5,
             "actor": "Marqeta Issuer Processor",
-            "direction": "\u2192",
-            "label": f"JIT Funding webhook dispatched to customer endpoint"
-                     f" ({marqeta_event_type} / {jit_method})",
+            "direction": "→",
+            "label": (
+                f"JIT Funding webhook dispatched to customer endpoint"
+                f" ({marqeta_event_type} / {jit_method})"
+            ),
             "payload": {
                 "event_type": marqeta_event_type,
                 "jit_funding_method": jit_method,
@@ -178,7 +215,7 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
         {
             "step": 6,
             "actor": "Customer JIT (System Under Test)",
-            "direction": "\u2190",
+            "direction": "←",
             "label": f"Customer JIT decision: {actual_dec}",
             "payload": customer_body,
             "timestamp": ts_inbound,
@@ -186,7 +223,7 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
         {
             "step": 7,
             "actor": "Visa Network",
-            "direction": "\u2190",
+            "direction": "←",
             "label": f"Visa returns network response code: {actual_rc}",
             "payload": {
                 "response_code": response_json.get("response_code"),
@@ -201,7 +238,7 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
         {
             "step": 8,
             "actor": "Acquirer",
-            "direction": "\u2190",
+            "direction": "←",
             "label": "Acquirer relays authorization response to terminal",
             "payload": {
                 "response_code": response_json.get("response_code"),
@@ -214,7 +251,7 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
         {
             "step": 9,
             "actor": "Merchant Terminal",
-            "direction": "\u2190",
+            "direction": "←",
             "label": "Final result displayed at merchant terminal",
             "payload": response_json,
             "timestamp": ts_inbound,
@@ -237,30 +274,86 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
         "audit_trail": audit_trail,
     }
 
-    HISTORY.append(trace)
-    del HISTORY[:-100]  # keep last 100
+    # Persist to SQLite.
+    try:
+        persist_transaction(trace)
+    except Exception:
+        pass  # never block execution on DB failure
+
     return trace
 
 
 # --------------------------------------------------------------------------- #
-# Endpoints
+# Health endpoints
 # --------------------------------------------------------------------------- #
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "orchestrator"}
 
 
+@app.get("/health/all")
+async def health_all():
+    """Check health of every service in the stack and return aggregated status."""
+    services = {
+        "orchestrator":        f"http://localhost:8000/health",
+        "acquirer":            f"{ACQUIRER_SVC_URL}/health",
+        "visa":                f"{VISA_SVC_URL}/health",
+        "marqeta_simulator":   f"{MARQETA_SIM_URL}/health",
+        "customer_jit":        f"{CUSTOMER_JIT_URL}/health",
+    }
+    results = {}
+    for name, url in services.items():
+        try:
+            r = requests.get(url, timeout=3)
+            results[name] = {
+                "status": "ok" if r.status_code == 200 else "degraded",
+                "http_status": r.status_code,
+                "url": url,
+            }
+        except requests.RequestException as e:
+            results[name] = {"status": "unreachable", "error": str(e), "url": url}
+
+    overall = "ok" if all(v["status"] == "ok" for v in results.values()) else "degraded"
+    return {"overall": overall, "services": results}
+
+
+# --------------------------------------------------------------------------- #
+# Scenario endpoints
+# --------------------------------------------------------------------------- #
 @app.get("/scenarios")
-async def list_scenarios():
-    return [
-        {
+async def list_scenarios(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    event_type: str = Query(None),
+    search: str = Query(None),
+):
+    """Return paginated scenario list with optional filtering."""
+    all_scenarios = _read_scenarios()
+
+    # Filter
+    filtered = []
+    for s in all_scenarios:
+        if event_type and s.get("event_type", "authorization") != event_type:
+            continue
+        if search:
+            needle = search.lower()
+            haystack = f"{s.get('id','')} {s.get('name','')} {s.get('description','')}".lower()
+            if needle not in haystack:
+                continue
+        filtered.append({
             "id": s.get("id"),
             "name": s.get("name"),
             "description": s.get("description"),
             "event_type": s.get("event_type", "authorization"),
-        }
-        for s in _read_scenarios()
-    ]
+            "expected_network_response_code": s.get("expected_network_response_code"),
+            "expected_customer_decision": s.get("expected_customer_decision"),
+            "tags": s.get("tags", []),
+        })
+
+    total = len(filtered)
+    offset = (page - 1) * limit
+    items = filtered[offset: offset + limit]
+    return {"items": items, "total": total, "page": page, "limit": limit}
 
 
 @app.post("/execute/{scenario_id}")
@@ -271,6 +364,9 @@ async def execute(scenario_id: str, unique: bool = True):
     return _execute_scenario_internal(scenario, unique=unique)
 
 
+# --------------------------------------------------------------------------- #
+# Suite endpoints
+# --------------------------------------------------------------------------- #
 @app.get("/suites")
 async def list_suites():
     """Return the suite catalogue with scenario counts."""
@@ -286,8 +382,15 @@ async def list_suites():
 
 
 @app.post("/execute_suite")
-async def execute_suite(request: Request):
-    """Run a named suite (or a custom list of scenario IDs) and return a suite result."""
+async def execute_suite(
+    request: Request,
+    format: str = Query("json"),
+):
+    """Run a named suite (or custom scenario list).
+
+    format=json  → JSON suite result (default)
+    format=junit → JUnit XML for CI pipelines
+    """
     body = await request.json()
     suite_key = body.get("suite_name", "full_regression")
     scenario_ids = body.get("scenario_ids") or SUITES.get(suite_key, {}).get("scenario_ids", [])
@@ -314,15 +417,15 @@ async def execute_suite(request: Request):
                 "error": "not found",
                 "duration_ms": 0,
                 "expected_network_response_code": None,
-                "actual_network_response_code":   None,
-                "expected_customer_decision":     None,
-                "actual_customer_decision":       None,
+                "actual_network_response_code": None,
+                "expected_customer_decision": None,
+                "actual_customer_decision": None,
                 "audit_trail": [],
             })
             continue
 
         suite_flags = scenario.get("suite_flags", {})
-        run_count    = suite_flags.get("run_count", 1)
+        run_count = suite_flags.get("run_count", 1)
         force_unique = suite_flags.get("force_unique", True)
         expect_second = suite_flags.get("expect_second_decision")
 
@@ -331,8 +434,8 @@ async def execute_suite(request: Request):
             is_unique = force_unique if run_num == 0 else False
             per_run.append(_execute_scenario_internal(scenario, unique=is_unique))
 
-        # For duplicate scenarios: first run must pass AND second must match the
-        # expected second-run decision (e.g. DUPLICATE).
+        # For duplicate scenarios: first run must pass AND second must match
+        # the expected second-run decision (e.g. DUPLICATE).
         if run_count == 2 and expect_second:
             passed = (
                 per_run[0].get("passed") and
@@ -348,9 +451,9 @@ async def execute_suite(request: Request):
             "name": scenario.get("name"),
             "passed": passed,
             "expected_network_response_code": primary.get("expected_network_response_code"),
-            "actual_network_response_code":   primary.get("actual_network_response_code"),
-            "expected_customer_decision":     primary.get("expected_customer_decision"),
-            "actual_customer_decision":       primary.get("actual_customer_decision"),
+            "actual_network_response_code": primary.get("actual_network_response_code"),
+            "expected_customer_decision": primary.get("expected_customer_decision"),
+            "actual_customer_decision": primary.get("actual_customer_decision"),
             "duration_ms": primary.get("duration_ms"),
             "audit_trail": primary.get("audit_trail", []),
         })
@@ -360,6 +463,7 @@ async def execute_suite(request: Request):
 
     suite_result = {
         "suite_name": suite_display_name,
+        "suite_key": suite_key,
         "run_at": run_at,
         "total": len(results),
         "passed": passed_count,
@@ -368,57 +472,88 @@ async def execute_suite(request: Request):
         "results": results,
     }
 
-    HISTORY.append({
-        "suite_run": True,
-        "suite_name": suite_display_name,
-        "passed": passed_count == len(results),
-        "timestamp": run_at,
-    })
-    del HISTORY[:-100]
+    # Persist suite run to SQLite.
+    try:
+        persist_suite_run(suite_key, suite_result)
+    except Exception:
+        pass
+
+    if format == "junit":
+        return _suite_result_to_junit(suite_result)
+
     return suite_result
 
 
-@app.post("/chip/command")
-async def chip_command(request: Request):
-    """Dispatch an APDU command to the software chip card emulator."""
-    body = await request.json()
-    cmd = body.get("command", "").upper()
-
-    dispatch = {
-        "SELECT":      lambda: _chip_emulator.select_application(
-                           aid=body.get("aid", "A0000000031010")),
-        "GET_DATA":    lambda: _chip_emulator.get_data(
-                           tag=body.get("tag", "5A")),
-        "VERIFY":      lambda: _chip_emulator.verify_pin(
-                           pin=body.get("pin", "")),
-        "READ_RECORD": lambda: _chip_emulator.read_record(
-                           int(body.get("sfi", 1)), int(body.get("record_num", 1))),
-        "PUT_DATA":    lambda: _chip_emulator.put_data(
-                           body.get("tag", ""), body.get("value", "")),
-        "GENERATE_AC": lambda: _chip_emulator.generate_ac(
-                           body.get("cdol_data", "")),
-        "RESET_CARD":  lambda: (
-                           _chip_emulator.reset_card() or
-                           {"data": "", "sw": "9000", "sw1": "90", "sw2": "00",
-                            "status": "CARD_RESET"}),
-        "GET_STATE":   lambda: {
-                           "data": "", "sw": "9000", "sw1": "90", "sw2": "00",
-                           "status": "OK"},
-    }
-
-    if cmd in dispatch:
-        resp = dispatch[cmd]()
-    else:
-        resp = {
-            "data": "", "sw": "6D00", "sw1": "6D", "sw2": "00",
-            "status": "INSTRUCTION_NOT_SUPPORTED",
-        }
-
-    resp["command"] = cmd
-    resp["card_state"] = _chip_emulator.get_card_state()
-    return resp
+@app.get("/suite_runs")
+async def list_suite_runs(
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=100),
+):
+    """Return paginated suite run history from SQLite."""
+    return get_suite_runs_page(page=page, limit=limit)
 
 
+def _suite_result_to_junit(suite_result: dict) -> Response:
+    """Convert a suite result dict to JUnit XML and return as HTTP response."""
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        f'<testsuite name="{_esc(suite_result["suite_name"])}"'
+        f' tests="{suite_result["total"]}"'
+        f' failures="{suite_result["failed"]}"'
+        f' time="{suite_result["duration_ms"] / 1000:.3f}"'
+        f' timestamp="{_esc(suite_result["run_at"])}">',
+    ]
+    for r in suite_result.get("results", []):
+        name = _esc(r.get("name") or r.get("scenario_id", "unknown"))
+        dur = f'{(r.get("duration_ms") or 0) / 1000:.3f}'
+        lines.append(f'  <testcase name="{name}" classname="e2ms.suite" time="{dur}">')
+        if not r.get("passed"):
+            exp_rc = _esc(str(r.get("expected_network_response_code") or ""))
+            act_rc = _esc(str(r.get("actual_network_response_code") or ""))
+            exp_d = _esc(str(r.get("expected_customer_decision") or ""))
+            act_d = _esc(str(r.get("actual_customer_decision") or ""))
+            msg = f"RC expected={exp_rc} actual={act_rc}; decision expected={exp_d} actual={act_d}"
+            lines.append(f'    <failure message="{msg}" type="AssertionError">{msg}</failure>')
+        lines.append("  </testcase>")
+    lines.append("</testsuite>")
+    xml_str = "\n".join(lines)
+    return Response(content=xml_str, media_type="application/xml")
+
+
+def _esc(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+# --------------------------------------------------------------------------- #
+# History endpoint (paginated)
+# --------------------------------------------------------------------------- #
+@app.get("/history")
+async def history(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    scenario_id: str = Query(None),
+    event_type: str = Query(None),
+    passed: str = Query(None),   # "true" | "false" | None
+):
+    """Return paginated transaction history from SQLite."""
+    passed_bool = None
+    if passed == "true":
+        passed_bool = True
+    elif passed == "false":
+        passed_bool = False
+
+    return get_transactions_page(
+        page=page,
+        limit=limit,
+        scenario_id=scenario_id,
+        event_type=event_type,
+        passed=passed_bool,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Generate (ad-hoc scenario builder)
+# --------------------------------------------------------------------------- #
 @app.post("/generate")
 async def generate(request: Request):
     body = await request.json()
@@ -435,7 +570,7 @@ async def generate(request: Request):
             "transaction_id": body.get("transaction_id", f"TXN_{scenario_id.upper()}"),
             "pan": body.get("pan", "4111111111111111"),
             "amount": amount,
-            "currency": "840",
+            "currency": body.get("currency", "840"),
             "mcc": body.get("mcc", "5411"),
             "merchant_name": body.get("merchant_name", "Generated Merchant"),
             "merchant_city": body.get("merchant_city", "San Francisco"),
@@ -449,23 +584,50 @@ async def generate(request: Request):
         },
         "expected_network_response_code": body.get("expected_response_code", "00"),
         "expected_customer_decision": body.get("expected_customer_decision", "APPROVED"),
+        "tags": body.get("tags", []),
     }
     if event_type != "authorization":
-        scenario["original_transaction_id"] = body.get("original_transaction_id", "TXN_AUTH_001")
+        scenario["original_transaction_id"] = body.get(
+            "original_transaction_id", "TXN_AUTH_001"
+        )
 
-    _ensure_scenarios_dir()
+    os.makedirs(SCENARIOS_DIR, exist_ok=True)
     out_path = os.path.join(SCENARIOS_DIR, f"{scenario_id}.json")
     with open(out_path, "w") as fh:
         json.dump(scenario, fh, indent=2)
     return {"created": os.path.basename(out_path), "scenario": scenario}
 
 
-@app.get("/history")
-async def history():
-    # Most recent first.
-    return list(reversed(HISTORY[-100:]))
+# --------------------------------------------------------------------------- #
+# Webhook replay
+# --------------------------------------------------------------------------- #
+@app.post("/replay_webhook")
+async def replay_webhook(request: Request):
+    """Re-POST a raw Marqeta JIT webhook payload directly to the customer JIT
+    endpoint and return the raw response — useful for debugging specific payloads."""
+    body = await request.json()
+    jit_url = body.get("jit_url") or f"{CUSTOMER_JIT_URL}/jit/authorize"
+    payload = body.get("payload", {})
+    timeout = int(body.get("timeout", 10))
+
+    try:
+        r = requests.post(jit_url, json=payload, timeout=timeout)
+        try:
+            resp_body = r.json()
+        except ValueError:
+            resp_body = {"raw": r.text}
+        return {
+            "status_code": r.status_code,
+            "response": resp_body,
+            "url": jit_url,
+        }
+    except requests.RequestException as e:
+        return {"error": str(e), "url": jit_url}
 
 
+# --------------------------------------------------------------------------- #
+# Reset
+# --------------------------------------------------------------------------- #
 @app.post("/reset")
 async def reset():
     """Proxy a reset to the customer JIT service so scenarios re-run cleanly."""
@@ -474,6 +636,143 @@ async def reset():
         return {"status": "ok", "customer_jit": r.json()}
     except (requests.RequestException, ValueError) as e:
         return {"status": "error", "detail": str(e)}
+
+
+# --------------------------------------------------------------------------- #
+# Environment management
+# --------------------------------------------------------------------------- #
+@app.get("/environments")
+async def get_environments():
+    """List all configured environments."""
+    return list_environments()
+
+
+@app.post("/environments")
+async def create_env(request: Request):
+    """Create a new environment entry."""
+    body = await request.json()
+    name = body.get("name")
+    api_url = body.get("api_url")
+    if not name or not api_url:
+        return {"error": "name and api_url are required"}
+    env_id = create_environment(
+        name=name,
+        api_url=api_url,
+        customer_jit_url=body.get("customer_jit_url"),
+        notes=body.get("notes"),
+    )
+    return {"id": env_id, "created": True}
+
+
+@app.put("/environments/{env_id}/activate")
+async def activate_env(env_id: int):
+    """Set an environment as active (deactivates all others)."""
+    ok = activate_environment(env_id)
+    if not ok:
+        return {"error": f"environment {env_id} not found"}
+    env = get_active_environment()
+    return {"activated": True, "environment": env}
+
+
+@app.get("/environments/active")
+async def get_active_env():
+    """Return the currently active environment."""
+    env = get_active_environment()
+    if env is None:
+        return {"error": "no active environment"}
+    return env
+
+
+# --------------------------------------------------------------------------- #
+# Chip/NFC card emulator
+# --------------------------------------------------------------------------- #
+@app.post("/chip/command")
+async def chip_command(request: Request):
+    """Dispatch an APDU command to the software chip card emulator."""
+    body = await request.json()
+    cmd = body.get("command", "").upper()
+
+    dispatch = {
+        "SELECT": lambda: _chip_emulator.select_application(
+            aid=body.get("aid", "A0000000031010")
+        ),
+        "GET_DATA": lambda: _chip_emulator.get_data(
+            tag=body.get("tag", "5A")
+        ),
+        "VERIFY": lambda: _chip_emulator.verify_pin(
+            pin=body.get("pin", "")
+        ),
+        "READ_RECORD": lambda: _chip_emulator.read_record(
+            int(body.get("sfi", 1)), int(body.get("record_num", 1))
+        ),
+        "PUT_DATA": lambda: _chip_emulator.put_data(
+            body.get("tag", ""), body.get("value", "")
+        ),
+        "GENERATE_AC": lambda: _chip_emulator.generate_ac(
+            body.get("cdol_data", "")
+        ),
+        "RESET_CARD": lambda: (
+            _chip_emulator.reset_card() or
+            {"data": "", "sw": "9000", "sw1": "90", "sw2": "00", "status": "CARD_RESET"}
+        ),
+        "GET_STATE": lambda: {
+            "data": "", "sw": "9000", "sw1": "90", "sw2": "00", "status": "OK"
+        },
+    }
+
+    if cmd in dispatch:
+        resp = dispatch[cmd]()
+    else:
+        resp = {
+            "data": "", "sw": "6D00", "sw1": "6D", "sw2": "00",
+            "status": "INSTRUCTION_NOT_SUPPORTED",
+        }
+
+    resp["command"] = cmd
+    resp["card_state"] = _chip_emulator.get_card_state()
+    return resp
+
+
+# --------------------------------------------------------------------------- #
+# Analytics endpoints
+# --------------------------------------------------------------------------- #
+@app.get("/analytics/rc_coverage")
+async def analytics_rc_coverage():
+    """Return per-response-code pass/fail counts."""
+    return get_rc_coverage()
+
+
+@app.get("/analytics/latency")
+async def analytics_latency(limit: int = Query(50, ge=1, le=200)):
+    """Return recent transaction latencies for charting."""
+    return get_latency_stats(limit=limit)
+
+
+@app.get("/analytics/trends")
+async def analytics_trends(days: int = Query(7, ge=1, le=90)):
+    """Return daily pass/fail counts for the trend chart."""
+    return get_daily_trends(days=days)
+
+
+@app.get("/analytics/summary")
+async def analytics_summary():
+    """Return a high-level summary of all-time test activity."""
+    rc_data = get_rc_coverage()
+    latency = get_latency_stats(limit=200)
+    total_txns = sum(r["total"] for r in rc_data)
+    total_passed = sum(r["passed"] for r in rc_data)
+    avg_latency = (
+        round(sum(r["duration_ms"] for r in latency) / len(latency), 2)
+        if latency else 0
+    )
+    return {
+        "total_transactions": total_txns,
+        "total_passed": total_passed,
+        "total_failed": total_txns - total_passed,
+        "pass_rate_pct": round(total_passed / total_txns * 100, 1) if total_txns else 0,
+        "avg_latency_ms": avg_latency,
+        "rc_codes_covered": len(rc_data),
+    }
 
 
 if __name__ == "__main__":

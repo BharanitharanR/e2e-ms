@@ -1,0 +1,24 @@
+{
+  "id": "rc_51_insufficient_funds",
+  "name": "RC 51 — Insufficient Funds",
+  "description": "Purchase exceeds the JIT funding limit ($50 default), triggers RC 51.",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_RC51_001",
+    "pan": "4111111111111111",
+    "amount": 7500,
+    "currency": "840",
+    "mcc": "5411",
+    "merchant_name": "Whole Foods Market",
+    "merchant_city": "Austin",
+    "merchant_state": "TX",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM0051",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "51",
+  "expected_customer_decision": "DECLINED",
+  "tags": ["rc_coverage", "decline", "insufficient_funds"]
+}

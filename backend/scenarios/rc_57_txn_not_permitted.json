@@ -1,0 +1,24 @@
+{
+  "id": "rc_57_txn_not_permitted",
+  "name": "RC 57 — Transaction Not Permitted (MCC Blocked)",
+  "description": "ATM cash advance with MCC 6011 blocked by BLOCKED_MCCS env var. Triggers RC 57.",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_RC57_001",
+    "pan": "4111111111111111",
+    "amount": 10000,
+    "currency": "840",
+    "mcc": "6011",
+    "merchant_name": "Chase ATM",
+    "merchant_city": "New York",
+    "merchant_state": "NY",
+    "merchant_country": "USA",
+    "pos_entry_mode": "011",
+    "terminal_id": "ATM0057",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "57",
+  "expected_customer_decision": "DECLINED",
+  "tags": ["rc_coverage", "decline", "mcc_blocked"]
+}

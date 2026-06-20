@@ -1,0 +1,24 @@
+{
+  "id": "rc_62_restricted_card",
+  "name": "RC 62 — Restricted Card",
+  "description": "Purchase at a restricted category merchant (MCC 7995 — gambling). Triggers RC 62.",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_RC62_001",
+    "pan": "4111111111111111",
+    "amount": 5000,
+    "currency": "840",
+    "mcc": "7995",
+    "merchant_name": "Vegas Casino Online",
+    "merchant_city": "Las Vegas",
+    "merchant_state": "NV",
+    "merchant_country": "USA",
+    "pos_entry_mode": "010",
+    "terminal_id": "TERM0062",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "57",
+  "expected_customer_decision": "DECLINED",
+  "tags": ["rc_coverage", "decline", "restricted_card", "gambling"]
+}
