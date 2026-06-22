@@ -1,3 +1,4 @@
+import os
 from pymongo import MongoClient
 
 from backend.scenario_loader import (
@@ -5,23 +6,57 @@ from backend.scenario_loader import (
     find_scenario
 )
 
-client = MongoClient(
-    "mongodb://mongodb:27017"
-)
 
-db = client["payment_simulator"]
+class _InMemoryCollection:
+    def __init__(self):
+        self._docs = {}
 
-scenarios = db["scenarios"]
+    def find(self, *_args, **_kwargs):
+        return list(self._docs.values())
 
-scenario_templates = db["scenario_templates"]
+    def find_one(self, query, *_args, **_kwargs):
+        if "id" in query:
+            return self._docs.get(query["id"])
+        return None
 
-agents = db["agent_definitions"]
+    def replace_one(self, query, doc, upsert=False):
+        key = query.get("id") or query.get("_id") or doc.get("id")
+        if key is not None and (upsert or key in self._docs):
+            self._docs[key] = doc
 
-prompts = db["prompt_templates"]
 
-guardrails = db["guardrails"]
+def _mongo_or_fallback_collections():
+    uri = os.getenv("MONGO_URI", "mongodb://mongodb:27017")
+    db_name = os.getenv("MONGO_DB", "payment_simulator")
+    try:
+        client = MongoClient(uri, serverSelectionTimeoutMS=1200, connectTimeoutMS=1200)
+        client.admin.command("ping")
+        db = client[db_name]
+        return (
+            db["scenarios"],
+            db["scenario_templates"],
+            db["agent_definitions"],
+            db["prompt_templates"],
+            db["guardrails"],
+            db["scenario_templates"],
+        )
+    except Exception:
+        scenarios_local = _InMemoryCollection()
+        templates_local = _InMemoryCollection()
+        agents_local = _InMemoryCollection()
+        prompts_local = _InMemoryCollection()
+        guardrails_local = _InMemoryCollection()
+        return (
+            scenarios_local,
+            templates_local,
+            agents_local,
+            prompts_local,
+            guardrails_local,
+            templates_local,
+        )
 
-templates = db["scenario_templates"]
+
+scenarios, scenario_templates, agents, prompts, guardrails, templates = _mongo_or_fallback_collections()
 
 def get_scenarios():
 
