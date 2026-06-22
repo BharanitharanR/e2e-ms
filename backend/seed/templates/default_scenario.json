@@ -1,0 +1,21 @@
+{
+  "id": "",
+  "name": "",
+  "description": "",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "",
+    "pan": "",
+    "amount": 0,
+    "currency": "840",
+    "mcc": "",
+    "merchant_name": "",
+    "merchant_city": "",
+    "merchant_state": "",
+    "merchant_country": "",
+    "pos_entry_mode": "071",
+    "terminal_id": ""
+  },
+  "expected_network_response_code": "",
+  "expected_customer_decision": ""
+}

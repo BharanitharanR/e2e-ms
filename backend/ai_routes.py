@@ -7,9 +7,14 @@ Requires ANTHROPIC_API_KEY environment variable.
 import os
 import json
 import logging
-
+from backend.ollama_client import OllamaClient
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from backend.ai_provider import generate_with_fallback
+from backend.agent_service import (
+    execute_agent,
+    analyze_execution
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +134,11 @@ Respond ONLY with a valid JSON object — no markdown fences, no commentary:
 }
 """
 
+def _call_ollama(prompt):
+
+    client = OllamaClient()
+
+    return client.generate_scenario(prompt)
 
 def _call_claude(system: str, user_msg: str, max_tokens: int = 1200) -> dict:
     """Call Claude and return parsed JSON response."""
@@ -166,36 +176,42 @@ def _call_claude(system: str, user_msg: str, max_tokens: int = 1200) -> dict:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+
 @ai_router.post("/generate_scenario")
 async def generate_scenario(request: Request):
-    """
-    Generate a complete scenario JSON from a natural-language description.
 
-    Request body:
-    {
-        "description": "A $75 gas station purchase in euros that should decline",
-        "event_type": "authorization",        # optional
-        "expected_outcome": "DECLINED"        # optional hint
-    }
-    """
     body = await request.json()
-    description = body.get("description", "").strip()
-    if not description:
-        return JSONResponse({"error": "description is required"}, status_code=400)
 
-    event_type = body.get("event_type", "authorization")
-    expected_outcome = body.get("expected_outcome", "")
+    user_input = (
+        body.get("prompt")
+        or body.get("description")
+        or body.get("input")
+        or ""
+    ).strip()
 
-    user_msg = (
-        f"Generate a precise test scenario for this situation:\n\n"
-        f"Description: {description}\n"
-        f"Event type: {event_type}\n"
-        f"Expected outcome hint: {expected_outcome or 'infer from description'}\n\n"
-        "Choose realistic MCC, amount, and merchant details that fit the context. "
-        "Make sure the scenario id is unique (use snake_case, no spaces)."
-    )
-    return _call_claude(_SCENARIO_SYSTEM, user_msg, max_tokens=1024)
+    if not user_input:
+        return JSONResponse(
+            {"error": "prompt is required"},
+            status_code=400
+        )
 
+    try:
+
+        return execute_agent(
+            "scenario_generator",
+            user_input
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "Scenario generation failed"
+        )
+
+        return JSONResponse(
+            {"error": str(e)},
+            status_code=500
+        )
 
 @ai_router.post("/explain_failure")
 async def explain_failure(request: Request):
@@ -259,7 +275,70 @@ async def suite_insights(request: Request):
     )
     return _call_claude(_SUITE_INSIGHTS_SYSTEM, user_msg, max_tokens=800)
 
+@ai_router.post("/run_test")
+async def run_test(
+    request: Request
+):
 
+    # Import here to avoid circular import
+    from backend.main import (
+        _execute_scenario_internal
+    )
+
+    body = await request.json()
+
+    description = (
+        body.get("description")
+        or body.get("prompt")
+        or ""
+    ).strip()
+
+    if not description:
+
+        return JSONResponse(
+            {
+                "error": "description is required"
+            },
+            status_code=400
+        )
+
+    try:
+
+        scenario = execute_agent(
+            "scenario_generator",
+            description
+        )
+
+        execution_result = (
+            _execute_scenario_internal(
+                scenario
+            )
+        )
+
+        analysis = analyze_execution(
+            scenario,
+            execution_result
+        )
+
+        return {
+            "scenario": scenario,
+            "execution_result": execution_result,
+            "analysis": analysis
+        }
+
+    except Exception as e:
+
+        logger.exception(
+            "AI test execution failed"
+        )
+
+        return JSONResponse(
+            {
+                "error": str(e)
+            },
+            status_code=500
+        )
+    
 @ai_router.post("/coverage_advisor")
 async def coverage_advisor(request: Request):
     """

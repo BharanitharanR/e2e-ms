@@ -1,0 +1,9 @@
+{
+  "_id": "scenario_generator",
+  "name": "Scenario Generator",
+  "description": "Generate payment simulator scenarios",
+  "prompt_template_id": "scenario_prompt_v1",
+  "guardrail_id": "scenario_guardrail_v1",
+  "model": "qwen3:8b",
+  "enabled": true
+}

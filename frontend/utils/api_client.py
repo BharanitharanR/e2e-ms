@@ -31,7 +31,7 @@ def api_get(path: str, params: dict = None, timeout: int = 20):
         return None
 
 
-def api_post(path: str, body: dict = None, timeout: int = 60):
+def api_post(path: str, body: dict = None, timeout: int = 600):
     """POST to the active backend and return parsed JSON, or None on error."""
     try:
         r = requests.post(f"{get_api_url()}{path}", json=body or {}, timeout=timeout)

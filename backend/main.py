@@ -14,6 +14,12 @@ import requests
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import Response
 import uvicorn
+from backend.bootstrap import bootstrap
+from backend.mongo_repository import (
+    get_scenarios,
+    get_scenario_by_id,
+    save_scenario
+)
 
 # Terminal lives in the same `backend` folder; support both run styles.
 try:
@@ -85,8 +91,10 @@ _chip_emulator = SoftwareCardEmulator()
 # --------------------------------------------------------------------------- #
 @app.on_event("startup")
 def _startup():
+    print("=== STARTUP HOOK CALLED ===")
     os.makedirs(SCENARIOS_DIR, exist_ok=True)
     init_db()
+    bootstrap()
 
 
 # --------------------------------------------------------------------------- #
@@ -105,10 +113,31 @@ def _read_scenarios():
     return scenarios
 
 
-def _find_scenario(scenario_id):
+def _find_scenario(
+    scenario_id
+):
+
+    scenario = get_scenario_by_id(
+        scenario_id
+    )
+
+    if scenario:
+        return scenario
+
     for s in _read_scenarios():
-        if s.get("id") == scenario_id or s.get("_file", "").rstrip(".json") == scenario_id:
+
+        if (
+            s.get("id") == scenario_id
+            or
+            s.get(
+                "_file",
+                ""
+            ).rstrip(
+                ".json"
+            ) == scenario_id
+        ):
             return s
+
     return None
 
 
@@ -328,7 +357,7 @@ async def list_scenarios(
     search: str = Query(None),
 ):
     """Return paginated scenario list with optional filtering."""
-    all_scenarios = _read_scenarios()
+    all_scenarios = get_scenarios()
 
     # Filter
     filtered = []
@@ -556,47 +585,126 @@ async def history(
 # --------------------------------------------------------------------------- #
 @app.post("/generate")
 async def generate(request: Request):
+
     body = await request.json()
-    scenario_id = body.get("scenario_id") or f"gen_{int(time.time())}"
-    event_type = body.get("event_type", "authorization")
-    amount = int(body.get("amount", 2500))
+    print("=== NEW MONGO GENERATE ENDPOINT ===")
+    print(body)
+    scenario_id = (
+        body.get("scenario_id")
+        or body.get("id")
+        or f"gen_{int(time.time())}"
+    )
 
-    scenario = {
-        "id": scenario_id,
-        "name": body.get("name", scenario_id),
-        "description": body.get("description", f"Generated {event_type} for {amount} cents"),
-        "event_type": event_type,
-        "request": {
-            "transaction_id": body.get("transaction_id", f"TXN_{scenario_id.upper()}"),
-            "pan": body.get("pan", "4111111111111111"),
-            "amount": amount,
-            "currency": body.get("currency", "840"),
-            "mcc": body.get("mcc", "5411"),
-            "merchant_name": body.get("merchant_name", "Generated Merchant"),
-            "merchant_city": body.get("merchant_city", "San Francisco"),
-            "merchant_state": body.get("merchant_state", "CA"),
-            "merchant_country": body.get("merchant_country", "USA"),
-            "pos_entry_mode": body.get("pos_entry_mode", "051"),
-            "terminal_id": body.get("terminal_id", "TERM9999"),
-            "acquiring_institution_id": "123456",
-            "forwarding_institution_id": "123456",
-            "datetime": datetime.now(timezone.utc).isoformat(),
-        },
-        "expected_network_response_code": body.get("expected_response_code", "00"),
-        "expected_customer_decision": body.get("expected_customer_decision", "APPROVED"),
-        "tags": body.get("tags", []),
-    }
-    if event_type != "authorization":
-        scenario["original_transaction_id"] = body.get(
-            "original_transaction_id", "TXN_AUTH_001"
+    event_type = body.get(
+        "event_type",
+        "authorization"
+    )
+
+    amount = int(
+        body.get(
+            "amount",
+            body.get(
+                "request",
+                {}
+            ).get(
+                "amount",
+                2500
+            )
         )
+    )
 
-    os.makedirs(SCENARIOS_DIR, exist_ok=True)
-    out_path = os.path.join(SCENARIOS_DIR, f"{scenario_id}.json")
-    with open(out_path, "w") as fh:
-        json.dump(scenario, fh, indent=2)
-    return {"created": os.path.basename(out_path), "scenario": scenario}
+    # AI-generated scenario already complete
+    if "request" in body:
 
+        scenario = body
+
+    else:
+
+        scenario = {
+            "id": scenario_id,
+            "name": body.get(
+                "name",
+                scenario_id
+            ),
+            "description": body.get(
+                "description",
+                f"Generated {event_type}"
+            ),
+            "event_type": event_type,
+            "request": {
+                "transaction_id": body.get(
+                    "transaction_id",
+                    f"TXN_{scenario_id.upper()}"
+                ),
+                "pan": body.get(
+                    "pan",
+                    "4111111111111111"
+                ),
+                "amount": amount,
+                "currency": body.get(
+                    "currency",
+                    "840"
+                ),
+                "mcc": body.get(
+                    "mcc",
+                    "5411"
+                ),
+                "merchant_name": body.get(
+                    "merchant_name",
+                    "Generated Merchant"
+                ),
+                "merchant_city": body.get(
+                    "merchant_city",
+                    "San Francisco"
+                ),
+                "merchant_state": body.get(
+                    "merchant_state",
+                    "CA"
+                ),
+                "merchant_country": body.get(
+                    "merchant_country",
+                    "USA"
+                ),
+                "pos_entry_mode": body.get(
+                    "pos_entry_mode",
+                    "051"
+                ),
+                "terminal_id": body.get(
+                    "terminal_id",
+                    "TERM9999"
+                ),
+                "acquiring_institution_id": "123456",
+                "forwarding_institution_id": "123456",
+                "datetime": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+            },
+            "expected_network_response_code": body.get(
+                "expected_response_code",
+                "00"
+            ),
+            "expected_customer_decision": body.get(
+                "expected_customer_decision",
+                "APPROVED"
+            ),
+            "tags": body.get(
+                "tags",
+                []
+            ),
+        }
+
+    save_scenario(
+        scenario
+    )
+
+    print(
+        f"SAVED SCENARIO: {scenario['id']}"
+    )
+
+    return {
+        "created": scenario["id"],
+        "scenario": scenario
+    }
 
 # --------------------------------------------------------------------------- #
 # Webhook replay

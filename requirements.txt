@@ -8,3 +8,4 @@ pandas
 altair
 jinja2
 anthropic>=0.40.0
+pymongo==4.8.0

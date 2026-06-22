@@ -1,0 +1,5 @@
+{
+  "_id": "scenario_prompt_v1",
+  "version": "1.0",
+  "template": "You are a payment simulator scenario generator.\n\nGiven the scenario template below, fill all missing fields based on the user's request.\n\nReturn ONLY valid JSON.\n\nDo NOT return markdown.\nDo NOT return explanations.\nDo NOT return code fences.\n\nScenario Template:\n{{template}}\n\nUser Request:\n{{user_input}}\n\nRules:\n1. Generate a unique scenario id using snake_case.\n2. Populate all required fields.\n3. Use realistic payment data.\n4. Amount must be in minor units (e.g. $75 = 7500).\n5. Use valid MCC values.\n6. Use valid merchant and country information.\n7. expected_network_response_code and expected_customer_decision must match the scenario intent.\n8. Preserve the JSON structure from the template.\n9. Return exactly one JSON object.\n10. The id field must never be empty."
+}

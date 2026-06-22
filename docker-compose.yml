@@ -77,5 +77,25 @@ services:
     depends_on:
       - backend
 
+  ollama:
+    build:
+      context: .
+      dockerfile: Dockerfile.ollama
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    environment:
+      OLLAMA_MODEL: qwen3:8b
+    volumes:
+      - ollama_data:/root/.ollama
+  mongodb:
+    image: mongo:7
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db    
 volumes:
   simulator_data:
+  mongo_data:
+  ollama_data:

@@ -47,45 +47,79 @@ with tab_gen:
         "Describe the test scenario", height=100, key="ai_gen_prompt",
         placeholder="e.g. A $150 purchase at a casino (MCC 7995) that should be declined as the MCC is blocked",
     )
-    col_g1, col_g2 = st.columns([3, 1])
-    save_scenario = col_g2.checkbox("Save to scenarios/", value=True, key="ai_gen_save")
+    col_g1 = st.container() 
+    
     if col_g1.button("✨ Generate with Claude", type="primary", key="ai_gen_btn"):
         if not user_prompt.strip():
             st.warning("Please enter a scenario description.")
         else:
             with st.spinner("Asking Claude to generate your scenario…"):
-                result = api_post("/ai/generate_scenario", {"prompt": user_prompt})
+                result = api_post(
+    "/ai/run_test",
+    {
+        "description": user_prompt
+    }
+)
             if result and "error" not in result:
-                st.session_state.ai_last_scenario = result
-                st.success("Scenario generated!")
+                st.session_state.ai_last_run = result
+                st.success(
+    "Test completed successfully."
+)
             else:
                 err = (result or {}).get("error", "AI service unavailable — check ANTHROPIC_API_KEY")
                 st.error(err)
 
-    ai_sc = st.session_state.ai_last_scenario
-    if ai_sc and "error" not in ai_sc:
-        scenario = ai_sc.get("scenario", ai_sc)
-        st.subheader("Generated Scenario")
-        st.json(scenario)
-        if save_scenario:
-            if st.button("💾 Save & Execute", key="ai_save_exec"):
-                save_result = api_post("/generate", scenario)
-                if save_result:
-                    sid = scenario.get("id", "")
-                    st.success(f"Saved as `{save_result.get('created','?')}`")
-                    if sid:
-                        with st.spinner("Running scenario…"):
-                            trace = api_post(f"/execute/{sid}")
-                        if trace and "error" not in trace:
-                            st.session_state.last_trace = trace
-                            ok  = trace.get("passed", False)
-                            rc  = trace.get("actual_network_response_code", "?")
-                            dec = trace.get("actual_customer_decision", "?")
-                            if ok:
-                                st.success(f"✅ PASSED — RC: {rc} | Decision: {dec}")
-                            else:
-                                st.error(f"❌ FAILED — RC: {rc} | Decision: {dec}")
+    run = st.session_state.get(
+        "ai_last_run"
+    )
 
+    if run and "error" not in run:
+
+        st.subheader(
+            "Generated Scenario"
+        )
+
+        st.json(
+            run["scenario"]
+        )
+
+        st.subheader(
+            "Execution Result"
+        )
+
+        execution = run[
+            "execution_result"
+        ]
+
+        st.json(
+            execution
+        )
+
+        passed = execution.get(
+            "passed",
+            False
+        )
+
+        if passed:
+
+            st.success(
+                "✅ Scenario Passed"
+            )
+
+        else:
+
+            st.error(
+                "❌ Scenario Failed"
+            )
+
+        st.subheader(
+            "AI Analysis Report"
+        )
+
+        st.json(
+            run["analysis"]
+        )
+   
 # ── Tab 2: Explain Failure ────────────────────────────────────────────────────
 with tab_explain:
     st.subheader("🔍 Explain a Test Failure")

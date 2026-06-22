@@ -1,0 +1,7 @@
+{
+  "_id": "test_execution_agent",
+  "name": "Test Execution Agent",
+  "model": "qwen3:8b",
+  "prompt_template_id": "test_execution_prompt_v1",
+  "guardrail_id": null
+}
