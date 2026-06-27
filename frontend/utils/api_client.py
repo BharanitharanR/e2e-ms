@@ -5,16 +5,40 @@ Reads the active API URL from session state (set by the Sandbox Config page),
 falling back to the API_URL env var, then to the default Docker service name.
 """
 import os
+from urllib.parse import urlparse
 import requests
 import streamlit as st
 
 
+def _running_in_docker() -> bool:
+    return os.path.exists("/.dockerenv")
+
+
+def _normalise_api_url(url: str) -> str:
+    """Map Docker hostnames to localhost when UI runs on host OS."""
+    if not url:
+        return url
+
+    parsed = urlparse(url)
+    if _running_in_docker():
+        return url
+
+    # When running Streamlit locally, Docker DNS names (e.g. "backend") do not
+    # resolve. Rewrite them to localhost while preserving scheme/port/path.
+    if parsed.hostname in {"backend", "acquirer", "visa", "marqeta_simulator", "customer_jit"}:
+        netloc = f"127.0.0.1:{parsed.port}" if parsed.port else "127.0.0.1"
+        return parsed._replace(netloc=netloc).geturl()
+
+    return url
+
+
 def get_api_url() -> str:
     """Return the currently-active backend API URL."""
-    return (
+    raw_url = (
         st.session_state.get("active_api_url")
-        or os.getenv("API_URL", "http://backend:8000")
+        or os.getenv("API_URL", "http://127.0.0.1:8000")
     )
+    return _normalise_api_url(raw_url)
 
 
 def api_get(path: str, params: dict = None, timeout: int = 20):
