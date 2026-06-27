@@ -3,22 +3,36 @@
 
 Registered on the FastAPI app under the /ai prefix.
 Requires ANTHROPIC_API_KEY environment variable.
+Model is configurable via ANTHROPIC_MODEL env var (T0.6).
+
+Provider contract (T0.4): every generation path returns a BARE scenario dict:
+    {"id": "...", "name": "...", "event_type": "...", "request": {...},
+     "expected_network_response_code": "...", "expected_customer_decision": "..."}
+
+The "wrapper" shape returned by the Claude system prompt
+    {"scenario": {...}, "explanation": ..., "suggested_rc": ..., "jit_behavior": ...}
+is unpacked by _claude_scenario_fn before being returned.  Endpoints that need
+the metadata attach it under a "meta" key that does NOT conflict with the bare
+scenario fields.
 """
 import os
 import json
 import logging
-from backend.ollama_client import OllamaClient
+import time
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+
 from backend.ai_provider import generate_with_fallback
-from backend.agent_service import (
-    execute_agent,
-    analyze_execution
-)
 
 logger = logging.getLogger(__name__)
 
 ai_router = APIRouter(prefix="/ai", tags=["AI Copilot"])
+logger.info("AI Copilot router created — /ai/* endpoints registered")
+
+# ── Model configuration (T0.6) ────────────────────────────────────────────────
+_DEFAULT_MODEL = "claude-opus-4-5"
+_CLAUDE_MODEL = os.environ.get("ANTHROPIC_MODEL", _DEFAULT_MODEL)
 
 # ── System prompts ────────────────────────────────────────────────────────────
 
@@ -134,14 +148,14 @@ Respond ONLY with a valid JSON object — no markdown fences, no commentary:
 }
 """
 
-def _call_ollama(prompt):
-
-    client = OllamaClient()
-
-    return client.generate_scenario(prompt)
+# ── Core Claude helper ────────────────────────────────────────────────────────
 
 def _call_claude(system: str, user_msg: str, max_tokens: int = 1200) -> dict:
-    """Call Claude and return parsed JSON response."""
+    """Call Claude and return parsed JSON response.
+
+    Reads ANTHROPIC_MODEL from env (T0.6); falls back to _DEFAULT_MODEL.
+    Strips markdown fences if Claude wraps the JSON despite instructions.
+    """
     try:
         import anthropic
     except ImportError:
@@ -151,10 +165,13 @@ def _call_claude(system: str, user_msg: str, max_tokens: int = 1200) -> dict:
     if not api_key:
         return {"error": "ANTHROPIC_API_KEY environment variable not set"}
 
+    model = os.environ.get("ANTHROPIC_MODEL", _DEFAULT_MODEL)
+
     client = anthropic.Anthropic(api_key=api_key)
+    raw = ""
     try:
         msg = client.messages.create(
-            model="claude-opus-4-5-20251101",
+            model=model,
             max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user_msg}],
@@ -165,6 +182,7 @@ def _call_claude(system: str, user_msg: str, max_tokens: int = 1200) -> dict:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
+        raw = raw.strip()
         return json.loads(raw)
     except json.JSONDecodeError as e:
         logger.warning("Claude returned non-JSON: %s", e)
@@ -174,12 +192,48 @@ def _call_claude(system: str, user_msg: str, max_tokens: int = 1200) -> dict:
         return {"error": str(e)}
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+# ── Provider functions (T0.4 — normalize to bare scenario dict) ───────────────
 
+def _claude_scenario_fn(prompt: str) -> dict:
+    """Call Claude for scenario generation and unpack the wrapper into a bare
+    scenario dict, attaching metadata under 'meta'.
+
+    Raises ValueError if the response contains an error or no 'scenario' key.
+    """
+    result = _call_claude(_SCENARIO_SYSTEM, prompt, max_tokens=1200)
+
+    if "error" in result:
+        raise ValueError(result["error"])
+
+    # Unpack wrapper {"scenario": {...}, "explanation": ..., ...}
+    if "scenario" in result:
+        scenario = result["scenario"]
+        # Attach extra Claude metadata without polluting the bare scenario
+        scenario["_meta"] = {
+            "explanation": result.get("explanation"),
+            "suggested_rc": result.get("suggested_rc"),
+            "jit_behavior": result.get("jit_behavior"),
+        }
+    else:
+        # Claude returned a flat dict that is itself the scenario
+        scenario = result
+
+    # Ensure id is present
+    if not scenario.get("id"):
+        scenario["id"] = f"gen_{int(time.time())}"
+
+    return scenario
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @ai_router.post("/generate_scenario")
 async def generate_scenario(request: Request):
+    """Generate a test scenario from a natural-language prompt.
 
+    Uses Claude-first via generate_with_fallback; Ollama is the fallback.
+    Returns a bare scenario dict (+ optional _meta from Claude).
+    """
     body = await request.json()
 
     user_input = (
@@ -190,45 +244,124 @@ async def generate_scenario(request: Request):
     ).strip()
 
     if not user_input:
-        return JSONResponse(
-            {"error": "prompt is required"},
-            status_code=400
-        )
+        return JSONResponse({"error": "prompt is required"}, status_code=400)
 
     try:
+        scenario = generate_with_fallback(user_input, _claude_scenario_fn)
 
-        return execute_agent(
-            "scenario_generator",
-            user_input
-        )
+        # Persist via mongo_repository so the scenario is immediately runnable
+        try:
+            from backend.mongo_repository import save_scenario
+            save_scenario({k: v for k, v in scenario.items() if k != "_meta"})
+        except Exception as save_err:
+            logger.warning("save_scenario failed (non-fatal): %s", save_err)
+
+        return scenario
 
     except Exception as e:
+        logger.exception("Scenario generation failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
-        logger.exception(
-            "Scenario generation failed"
-        )
 
-        return JSONResponse(
-            {"error": str(e)},
-            status_code=500
-        )
+@ai_router.post("/run_test")
+async def run_test(request: Request):
+    """Generate a scenario from a prompt then immediately run it end-to-end.
+
+    Returns {"scenario": <bare dict>, "execution_result": <trace>, "analysis": <dict>}.
+    Always uses generate_with_fallback so Claude is tried first.
+    """
+    # Import here to avoid circular import (main imports ai_routes)
+    from backend.main import _execute_scenario_internal
+
+    body = await request.json()
+
+    description = (
+        body.get("description")
+        or body.get("prompt")
+        or ""
+    ).strip()
+
+    if not description:
+        return JSONResponse({"error": "description is required"}, status_code=400)
+
+    try:
+        # Generate bare scenario dict
+        scenario = generate_with_fallback(description, _claude_scenario_fn)
+
+        # Strip internal _meta key before passing to the execution engine
+        bare_scenario = {k: v for k, v in scenario.items() if k != "_meta"}
+
+        # Persist so it's listed in /scenarios
+        try:
+            from backend.mongo_repository import save_scenario
+            save_scenario(bare_scenario)
+        except Exception as save_err:
+            logger.warning("save_scenario failed (non-fatal): %s", save_err)
+
+        # Run the scenario through the full stack
+        execution_result = _execute_scenario_internal(bare_scenario)
+
+        # Build a lightweight analysis (Claude if available, else heuristic)
+        analysis = _analyze_result(bare_scenario, execution_result)
+
+        return {
+            "scenario": bare_scenario,
+            "execution_result": execution_result,
+            "analysis": analysis,
+        }
+
+    except Exception as e:
+        logger.exception("AI test execution failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+def _analyze_result(scenario: dict, result: dict) -> dict:
+    """Produce an analysis dict for a completed run.
+
+    Tries Claude; falls back to a heuristic summary so /run_test never blocks
+    on an unavailable AI provider.
+    """
+    passed = result.get("passed", False)
+    actual_rc = result.get("actual_network_response_code", "?")
+    expected_rc = result.get("expected_network_response_code", "?")
+    actual_dec = result.get("actual_customer_decision", "?")
+
+    # Heuristic fallback (always available)
+    heuristic = {
+        "passed": passed,
+        "verdict": "PASS" if passed else "FAIL",
+        "actual_rc": actual_rc,
+        "expected_rc": expected_rc,
+        "actual_decision": actual_dec,
+        "summary": (
+            f"Scenario '{scenario.get('name', scenario.get('id'))}' "
+            + ("passed." if passed else f"failed — got RC {actual_rc}, expected {expected_rc}.")
+        ),
+    }
+
+    if passed:
+        return heuristic  # No need for AI on a clean pass
+
+    # Try Claude for a richer analysis
+    user_msg = (
+        f"Transaction test failure:\n\n"
+        f"Scenario: {scenario.get('name','Unknown')}\n"
+        f"Expected RC: {expected_rc} | Actual RC: {actual_rc}\n"
+        f"Expected Decision: {result.get('expected_customer_decision')} | Actual: {actual_dec}\n"
+        f"Duration: {result.get('duration_ms')} ms\n\n"
+        f"Audit Trail:\n{json.dumps(result.get('audit_trail', []), indent=2)}"
+    )
+    ai_result = _call_claude(_ANOMALY_SYSTEM, user_msg, max_tokens=600)
+    if "error" not in ai_result:
+        ai_result.update(heuristic)
+        return ai_result
+
+    return heuristic
+
 
 @ai_router.post("/explain_failure")
 async def explain_failure(request: Request):
-    """
-    Explain why a test failed given its audit trail.
-
-    Request body:
-    {
-        "audit_trail": [...],
-        "expected_rc": "00",
-        "actual_rc": "05",
-        "expected_decision": "APPROVED",
-        "actual_decision": "DECLINED",
-        "scenario_name": "...",
-        "duration_ms": 234.5
-    }
-    """
+    """Explain why a test failed given its audit trail."""
     body = await request.json()
     audit = body.get("audit_trail", [])
 
@@ -245,19 +378,17 @@ async def explain_failure(request: Request):
 
 @ai_router.post("/suite_insights")
 async def suite_insights(request: Request):
-    """
-    Provide executive-level insights for a completed suite run.
-
-    Request body: the full suite_result dict from /execute_suite.
-    """
+    """Provide executive-level insights for a completed suite run."""
     body = await request.json()
-    results = body.get("results", [])
+    suite_result = body.get("suite_result") or body  # accept both wrapping styles
+    results = suite_result.get("results", [])
     failed = [r for r in results if not r.get("passed")]
 
     user_msg = (
-        f"Suite: {body.get('suite_name')}\n"
-        f"Run at: {body.get('run_at')}\n"
-        f"Result: {body.get('passed')}/{body.get('total')} passed in {body.get('duration_ms')}ms\n\n"
+        f"Suite: {suite_result.get('suite_name')}\n"
+        f"Run at: {suite_result.get('run_at')}\n"
+        f"Result: {suite_result.get('passed')}/{suite_result.get('total')} passed "
+        f"in {suite_result.get('duration_ms')}ms\n\n"
         f"Failed tests ({len(failed)}):\n"
         + json.dumps(
             [
@@ -273,84 +404,16 @@ async def suite_insights(request: Request):
             indent=2,
         )
     )
-    return _call_claude(_SUITE_INSIGHTS_SYSTEM, user_msg, max_tokens=800)
+    result = _call_claude(_SUITE_INSIGHTS_SYSTEM, user_msg, max_tokens=800)
+    # Normalise: the frontend copilot page expects an "insights" key
+    if "error" not in result and "summary" in result:
+        result.setdefault("insights", result["summary"])
+    return result
 
-@ai_router.post("/run_test")
-async def run_test(
-    request: Request
-):
 
-    # Import here to avoid circular import
-    from backend.main import (
-        _execute_scenario_internal
-    )
-
-    body = await request.json()
-
-    description = (
-        body.get("description")
-        or body.get("prompt")
-        or ""
-    ).strip()
-
-    if not description:
-
-        return JSONResponse(
-            {
-                "error": "description is required"
-            },
-            status_code=400
-        )
-
-    try:
-
-        scenario = execute_agent(
-            "scenario_generator",
-            description
-        )
-
-        execution_result = (
-            _execute_scenario_internal(
-                scenario
-            )
-        )
-
-        analysis = analyze_execution(
-            scenario,
-            execution_result
-        )
-
-        return {
-            "scenario": scenario,
-            "execution_result": execution_result,
-            "analysis": analysis
-        }
-
-    except Exception as e:
-
-        logger.exception(
-            "AI test execution failed"
-        )
-
-        return JSONResponse(
-            {
-                "error": str(e)
-            },
-            status_code=500
-        )
-    
 @ai_router.post("/coverage_advisor")
 async def coverage_advisor(request: Request):
-    """
-    Analyse current RC coverage and identify gaps.
-
-    Request body:
-    {
-        "covered_rcs": ["00", "05", "51"],
-        "scenario_count": 14,
-        "suite_names": ["full_regression", "auth_flows"]
-    }
-    """
+    """Analyse current RC coverage and identify gaps."""
     body = await request.json()
     user_msg = (
         f"Current test coverage:\n"

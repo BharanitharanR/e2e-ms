@@ -15,12 +15,18 @@ class _InMemoryCollection:
         return list(self._docs.values())
 
     def find_one(self, query, *_args, **_kwargs):
+        # {} → return first document (used by get_template())
+        if not query:
+            return next(iter(self._docs.values()), None)
+        # Match on either "id" or "_id" — seed files use "_id" as the key
+        if "_id" in query:
+            return self._docs.get(query["_id"])
         if "id" in query:
             return self._docs.get(query["id"])
         return None
 
     def replace_one(self, query, doc, upsert=False):
-        key = query.get("id") or query.get("_id") or doc.get("id")
+        key = query.get("_id") or query.get("id") or doc.get("_id") or doc.get("id")
         if key is not None and (upsert or key in self._docs):
             self._docs[key] = doc
 

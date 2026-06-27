@@ -12,6 +12,7 @@ services:
       - CUSTOMER_JIT_RESET_URL=http://customer_jit:8001/reset
       - DB_PATH=/data/simulator.db
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-opus-4-5}
       - CUSTOMER_JIT_URL=http://customer_jit:8001
       - ACQUIRER_SVC_URL=http://acquirer:8101
       - VISA_SVC_URL=http://visa:8102
