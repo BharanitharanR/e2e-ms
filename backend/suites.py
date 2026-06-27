@@ -70,4 +70,32 @@ SUITES = {
             "suite_reversal",
         ],
     },
+    "lifecycle": {
+        "name": "Linked Lifecycle Chain",
+        "scenario_ids": [
+            "lifecycle_auth",
+            "lifecycle_partial_clear",
+            "lifecycle_refund",
+            "lifecycle_reversal",
+        ],
+    },
+    "certification": {
+        "name": "Certification Suite",
+        "scenario_ids": [
+            "rc_51_insufficient_funds",
+            "rc_54_expired_card",
+            "rc_57_txn_not_permitted",
+            "rc_61_exceeds_limit",
+            "rc_62_restricted_card",
+            "rc_65_velocity_exceeded",
+            "rc_75_pin_retries",
+            "rc_91_issuer_unavailable",
+            "rc_96_system_error",
+            "authorization_approve",
+            "authorization_decline",
+            "advice_clearing",
+            "refund",
+            "suite_reversal",
+        ],
+    },
 }

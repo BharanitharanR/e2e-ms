@@ -89,6 +89,169 @@ def build_junit_xml(suite_result: dict) -> str:
     )
 
 
+def build_certification_report(certify_result: dict) -> str:
+    """Generate a branded Marqeta JIT Certification HTML report.
+
+    Args:
+        certify_result: dict returned by POST /certify.
+
+    Returns:
+        Self-contained HTML string suitable for download or PDF export.
+    """
+    from jinja2 import Environment
+
+    # Jinja2 doesn't like raw {% %} inside string — use raw block
+    template_str = r"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Marqeta JIT Integration — Certification Report</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Arial,sans-serif;background:#f8f9fa;color:#212529;padding:0}
+  .page{max-width:900px;margin:0 auto;background:#fff;padding:40px 48px 56px}
+  .header{display:flex;align-items:center;justify-content:space-between;
+          border-bottom:3px solid #1a1f71;padding-bottom:20px;margin-bottom:28px}
+  .brand{font-size:1.5em;font-weight:700;color:#1a1f71}
+  .brand span{color:#eb001b}
+  .report-title{font-size:1em;color:#555;margin-top:4px}
+  .verdict{text-align:center;padding:18px 0;border-radius:8px;margin-bottom:28px;
+           font-size:1.4em;font-weight:700;color:#fff}
+  .cert-yes{background:linear-gradient(135deg,#28a745,#20c997)}
+  .cert-no{background:linear-gradient(135deg,#dc3545,#fd7e14)}
+  .meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 32px;
+             margin-bottom:28px;font-size:.92em}
+  .lbl{color:#888;font-size:.82em;text-transform:uppercase;letter-spacing:.05em}
+  .val{font-weight:600;color:#333;margin-top:2px;word-break:break-all}
+  .scorecard{display:flex;gap:16px;margin-bottom:28px}
+  .sc{flex:1;background:#f8f9fa;border-radius:8px;padding:16px;text-align:center}
+  .sc .num{font-size:2em;font-weight:700;color:#1a1f71}
+  .sc .lbl2{font-size:.78em;color:#888;text-transform:uppercase;margin-top:4px}
+  .pills{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:24px}
+  .pill{padding:3px 10px;border-radius:20px;font-size:.8em;font-weight:600}
+  .pg{background:#d4edda;color:#155724}.pb{background:#cce5ff;color:#004085}
+  h3{color:#1a1f71;margin:20px 0 8px;font-size:1em}
+  table{border-collapse:collapse;width:100%;font-size:.84em;margin-bottom:28px}
+  th{background:#1a1f71;color:#fff;padding:9px 8px;text-align:left}
+  td{padding:8px;border-bottom:1px solid #eee}
+  tr:nth-child(even) td{background:#fafafa}
+  .p{color:#28a745;font-weight:700}.f{color:#dc3545;font-weight:700}
+  .footer{border-top:1px solid #eee;padding-top:14px;margin-top:28px;
+          font-size:.76em;color:#aaa;display:flex;justify-content:space-between}
+</style></head><body><div class="page">
+
+<div class="header">
+  <div>
+    <div class="brand">Marqeta<span>&reg;</span> JIT Integration</div>
+    <div class="report-title">Certification Report &mdash; Marqeta E2E Simulator</div>
+  </div>
+  <div style="font-size:2.2em">&#127970;</div>
+</div>
+
+{% set certified = certify_result.get('certified', False) if certify_result is defined else certified %}
+<div class="verdict {{ 'cert-yes' if certified else 'cert-no' }}">
+  {{ '&#9989;  CERTIFIED' if certified else '&#10060;  NOT CERTIFIED' }}
+  &nbsp;&mdash;&nbsp; Score: {{ coverage.score }}% &nbsp;(threshold: {{ threshold }}%)
+</div>
+
+<div class="meta-grid">
+  <div><div class="lbl">SUT Name</div>
+       <div class="val">{{ sut.name if sut else '&mdash;' }}</div></div>
+  <div><div class="lbl">API URL</div>
+       <div class="val">{{ sut.api_url if sut else '&mdash;' }}</div></div>
+  <div><div class="lbl">Customer JIT URL</div>
+       <div class="val">{{ sut.customer_jit_url if sut else '&mdash;' }}</div></div>
+  <div><div class="lbl">Run Timestamp</div>
+       <div class="val">{{ timestamp }}</div></div>
+</div>
+
+<div class="scorecard">
+  <div class="sc"><div class="num" style="color:{{ '#28a745' if certified else '#dc3545' }}">{{ coverage.score }}%</div>
+                  <div class="lbl2">Score</div></div>
+  <div class="sc"><div class="num">{{ coverage.passed_scenarios }}</div>
+                  <div class="lbl2">Passed</div></div>
+  <div class="sc"><div class="num">{{ coverage.total_scenarios - coverage.passed_scenarios }}</div>
+                  <div class="lbl2">Failed</div></div>
+  <div class="sc"><div class="num">{{ coverage.total_scenarios }}</div>
+                  <div class="lbl2">Total</div></div>
+</div>
+
+<h3>Lifecycle Events Covered</h3>
+<div class="pills">
+  {% for evt in coverage.lifecycle_events_covered %}
+  <span class="pill pg">{{ evt }}</span>
+  {% else %}<span style="color:#aaa;font-size:.85em">None passed</span>
+  {% endfor %}
+</div>
+
+<h3>Response Codes Covered</h3>
+<div class="pills">
+  {% for rc in coverage.rc_codes_covered %}
+  <span class="pill pb">RC {{ rc }}</span>
+  {% else %}<span style="color:#aaa;font-size:.85em">None passed</span>
+  {% endfor %}
+</div>
+
+<h3>Per-Scenario Results</h3>
+<table>
+  <tr><th>Result</th><th>Scenario</th><th>Event</th>
+      <th>Exp RC</th><th>Act RC</th>
+      <th>Exp Decision</th><th>Act Decision</th><th>ms</th></tr>
+  {% for r in results %}
+  <tr>
+    <td class="{{ 'p' if r.passed else 'f' }}">{{ '&#9989; PASS' if r.passed else '&#10060; FAIL' }}</td>
+    <td>{{ r.name }}</td>
+    <td>{{ r.event_type }}</td>
+    <td>{{ r.expected_rc or '&mdash;' }}</td>
+    <td>{{ r.actual_rc or '&mdash;' }}</td>
+    <td>{{ r.expected_decision or '&mdash;' }}</td>
+    <td>{{ r.actual_decision or '&mdash;' }}</td>
+    <td>{{ '%.0f' % (r.duration_ms or 0) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<div class="footer">
+  <span>Generated by Marqeta E2E Simulator (e2MS)</span>
+  <span>{{ timestamp[:10] }}</span>
+</div>
+</div></body></html>"""
+
+    return Environment().from_string(template_str).render(**certify_result)
+
+
+def build_certification_pdf(certify_result: dict):
+    """Render the certification report as PDF bytes.
+
+    Tries weasyprint first, then playwright headless chromium.
+    Falls back to returning HTML bytes if neither is available.
+
+    Returns:
+        (bytes, mime_type) — caller uses mime_type to set Content-Type.
+    """
+    html = build_certification_report(certify_result)
+
+    try:
+        from weasyprint import HTML as WeasyHTML  # type: ignore
+        return WeasyHTML(string=html).write_pdf(), "application/pdf"
+    except (ImportError, Exception):
+        pass
+
+    try:
+        from playwright.sync_api import sync_playwright  # type: ignore
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            pg = browser.new_page()
+            pg.set_content(html, wait_until="networkidle")
+            pdf = pg.pdf(format="A4", margin={"top": "20mm", "bottom": "20mm",
+                                               "left": "15mm", "right": "15mm"})
+            browser.close()
+        return pdf, "application/pdf"
+    except (ImportError, Exception):
+        pass
+
+    # Fallback: return HTML
+    return html.encode("utf-8"), "text/html"
+
+
 def _esc(s: str) -> str:
     """Minimal XML character escaping."""
     return (

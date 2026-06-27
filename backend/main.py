@@ -934,5 +934,175 @@ async def analytics_summary():
     }
 
 
+# --------------------------------------------------------------------------- #
+# Certification endpoint (T0.1)
+# --------------------------------------------------------------------------- #
+
+#: Scenarios every SUT must handle to earn certification.
+_CERTIFICATION_SCENARIOS = [
+    # RC matrix
+    "rc_51_insufficient_funds",
+    "rc_54_expired_card",
+    "rc_57_txn_not_permitted",
+    "rc_61_exceeds_limit",
+    "rc_62_restricted_card",
+    "rc_65_velocity_exceeded",
+    "rc_75_pin_retries",
+    "rc_91_issuer_unavailable",
+    "rc_96_system_error",
+    # Lifecycle happy paths
+    "authorization_approve",
+    "authorization_decline",
+    "advice_clearing",
+    "refund",
+    "suite_reversal",
+]
+
+_DEFAULT_CERT_THRESHOLD = 95   # pass-rate % required for certified=true
+
+
+@app.post("/certify")
+async def certify(request: Request):
+    """Run the fixed certification suite against the active environment.
+
+    Body (all optional):
+        threshold  int   — pass-rate % for certified=true  (default 95)
+        reset      bool  — reset JIT state before run      (default true)
+
+    Returns:
+        sut, timestamp, results, coverage{lifecycle_events_covered,
+        rc_codes_covered, score}, certified, threshold
+    """
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    threshold = int(body.get("threshold", _DEFAULT_CERT_THRESHOLD))
+    reset_jit = body.get("reset", True)
+
+    sut = get_active_environment()
+
+    if reset_jit:
+        try:
+            requests.post(CUSTOMER_JIT_RESET_URL, timeout=5)
+        except requests.RequestException:
+            pass
+
+    run_at = datetime.now(timezone.utc).isoformat()
+    results = []
+    lifecycle_covered: set = set()
+    rc_covered: set = set()
+
+    for scenario_id in _CERTIFICATION_SCENARIOS:
+        scenario = _find_scenario(scenario_id)
+        if scenario is None:
+            results.append({
+                "scenario_id":       scenario_id,
+                "name":              scenario_id,
+                "event_type":        "unknown",
+                "expected_rc":       None,
+                "actual_rc":         None,
+                "expected_decision": None,
+                "actual_decision":   None,
+                "passed":            False,
+                "duration_ms":       0,
+                "error":             "scenario not found",
+            })
+            continue
+
+        trace = _execute_scenario_internal(scenario, unique=True)
+        evt    = scenario.get("event_type", "authorization")
+        act_rc = trace.get("actual_network_response_code")
+
+        if trace.get("passed"):
+            lifecycle_covered.add(evt)
+            if act_rc:
+                rc_covered.add(act_rc)
+
+        results.append({
+            "scenario_id":       scenario_id,
+            "name":              scenario.get("name", scenario_id),
+            "event_type":        evt,
+            "expected_rc":       trace.get("expected_network_response_code"),
+            "actual_rc":         act_rc,
+            "expected_decision": trace.get("expected_customer_decision"),
+            "actual_decision":   trace.get("actual_customer_decision"),
+            "passed":            trace.get("passed", False),
+            "duration_ms":       trace.get("duration_ms", 0),
+            "audit_trail":       trace.get("audit_trail", []),
+            "iso_message":       trace.get("iso_message", {}),
+            "jpf":               trace.get("jpf", {}),
+        })
+
+    total        = len(results)
+    passed_count = sum(1 for r in results if r["passed"])
+    score        = round(passed_count / total * 100, 1) if total else 0.0
+    certified    = score >= threshold
+
+    return {
+        "sut":       sut,
+        "timestamp": run_at,
+        "results":   results,
+        "coverage": {
+            "lifecycle_events_covered": sorted(lifecycle_covered),
+            "rc_codes_covered":         sorted(rc_covered),
+            "total_scenarios":          total,
+            "passed_scenarios":         passed_count,
+            "score":                    score,
+        },
+        "certified": certified,
+        "threshold": threshold,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Audit export endpoint (T2.3)
+# --------------------------------------------------------------------------- #
+
+@app.get("/history/export")
+async def history_export(
+    format: str = Query("json", description="json or csv"),
+    limit: int = Query(500, ge=1, le=5000),
+):
+    """Export transaction history as JSON or CSV for audit purposes."""
+    import io
+    from fastapi.responses import StreamingResponse
+
+    page_result = get_transactions_page(page=1, limit=limit)
+    items = page_result.get("items", [])
+
+    if format == "csv":
+        import csv
+        output = io.StringIO()
+        fieldnames = [
+            "id", "scenario_id", "scenario_name", "event_type", "timestamp",
+            "passed", "expected_rc", "actual_rc", "expected_decision",
+            "actual_decision", "duration_ms",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in items:
+            writer.writerow(row)
+        output.seek(0)
+        return StreamingResponse(
+            io.BytesIO(output.getvalue().encode()),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=audit_export.csv"},
+        )
+
+    payload = json.dumps({
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(items),
+        "items": items,
+    }, indent=2, default=str)
+    return StreamingResponse(
+        io.BytesIO(payload.encode()),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=audit_export.json"},
+    )
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
