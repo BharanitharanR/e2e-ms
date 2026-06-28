@@ -12,7 +12,14 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 app = FastAPI(title="Acquirer Simulator")
-VISA_URL = os.getenv("VISA_URL", "http://visa:8102/network/authorize")
+
+def _resolve_url(docker_name: str, docker_port: int, path: str = "") -> str:
+    """Resolve Docker service URL to localhost when running on host OS."""
+    if os.path.exists("/.dockerenv"):
+        return f"http://{docker_name}:{docker_port}{path}"
+    return f"http://127.0.0.1:{docker_port}{path}"
+
+VISA_URL = os.getenv("VISA_URL", _resolve_url("visa", 8102, "/network/authorize"))
 
 
 def _post_with_retry(url, body, attempts=3, timeout=10):

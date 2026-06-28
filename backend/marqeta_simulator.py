@@ -32,7 +32,14 @@ except ImportError:  # pragma: no cover
     from backend.models import NetworkAuthRequest, NetworkAuthResponse
 
 app = FastAPI(title="Marqeta Issuer Processor Simulator")
-CUSTOMER_JIT_URL = os.getenv("CUSTOMER_JIT_URL", "http://customer_jit:8001/jit/authorize")
+
+def _resolve_url(docker_name: str, docker_port: int, path: str = "") -> str:
+    """Resolve Docker service URL to localhost when running on host OS."""
+    if os.path.exists("/.dockerenv"):
+        return f"http://{docker_name}:{docker_port}{path}"
+    return f"http://127.0.0.1:{docker_port}{path}"
+
+CUSTOMER_JIT_URL = os.getenv("CUSTOMER_JIT_URL", _resolve_url("customer_jit", 8001, "/jit/authorize"))
 
 # --------------------------------------------------------------------------- #
 # Issuer ledger (T1.1 / T1.2)

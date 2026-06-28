@@ -101,12 +101,18 @@ except Exception:  # pragma: no cover
     def build_enrichment_trace(*args, **kwargs):  # type: ignore[misc]
         return []
 
-ACQUIRER_URL = os.getenv("ACQUIRER_URL", "http://acquirer:8101/authorize")
-CUSTOMER_JIT_RESET_URL = os.getenv("CUSTOMER_JIT_RESET_URL", "http://customer_jit:8001/reset")
-CUSTOMER_JIT_URL = os.getenv("CUSTOMER_JIT_URL", "http://customer_jit:8001")
-MARQETA_SIM_URL = os.getenv("MARQETA_SIM_URL", "http://marqeta_simulator:8103")
-ACQUIRER_SVC_URL = os.getenv("ACQUIRER_SVC_URL", "http://acquirer:8101")
-VISA_SVC_URL = os.getenv("VISA_SVC_URL", "http://visa:8102")
+def _resolve_url(docker_name: str, docker_port: int, path: str = "") -> str:
+    """Resolve Docker service URL to localhost when running on host OS."""
+    if os.path.exists("/.dockerenv"):
+        return f"http://{docker_name}:{docker_port}{path}"
+    return f"http://127.0.0.1:{docker_port}{path}"
+
+ACQUIRER_URL = os.getenv("ACQUIRER_URL", _resolve_url("acquirer", 8101, "/authorize"))
+CUSTOMER_JIT_RESET_URL = os.getenv("CUSTOMER_JIT_RESET_URL", _resolve_url("customer_jit", 8001, "/reset"))
+CUSTOMER_JIT_URL = os.getenv("CUSTOMER_JIT_URL", _resolve_url("customer_jit", 8001))
+MARQETA_SIM_URL = os.getenv("MARQETA_SIM_URL", _resolve_url("marqeta_simulator", 8103))
+ACQUIRER_SVC_URL = os.getenv("ACQUIRER_SVC_URL", _resolve_url("acquirer", 8101))
+VISA_SVC_URL = os.getenv("VISA_SVC_URL", _resolve_url("visa", 8102))
 SCENARIOS_DIR = os.path.join(os.path.dirname(__file__), "scenarios")
 
 app = FastAPI(title="Marqeta E2E Simulator Orchestrator")
