@@ -36,6 +36,10 @@ def init_session_state():
         "ai_last_scenario":   None,
         "ai_last_explanation": None,
         "ai_generating":      False,
+        # Mandate workflow (T2.1-T2.3 — Phase 5)
+        "mandate_proposal":   None,
+        "mandate_network":    "visa",
+        "ai_last_run":        None,
         # Sandbox health cache
         "health_cache":       {},
         # ISO workbench Column 1 DE values

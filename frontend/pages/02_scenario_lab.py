@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import streamlit as st
 from utils.api_client import api_get, api_post
 from utils.session_state import init_session_state
-from utils.demo_mode import render_node_diagram, render_playback_step, _DEMO_NODES, _STEP_NODE_MAP
+from utils.demo_mode import render_node_diagram, render_playback_step, _STEP_NODE_MAP
 
 init_session_state()
 st.set_page_config(page_title="e2MS — Scenario Lab", page_icon="🧬", layout="wide")
@@ -245,8 +245,14 @@ if st.session_state.demo_mode:
         demo_scenario_id = selected_id if scenarios else "authorization_approve"
         demo_trace = api_post(f"/execute/{demo_scenario_id}?unique=true")
         if demo_trace and "error" not in demo_trace:
-            speed  = st.session_state.get("demo_speed", 1.5)
-            audit  = demo_trace.get("audit_trail", [])
+            speed   = st.session_state.get("demo_speed", 1.5)
+            audit   = demo_trace.get("audit_trail", [])
+            # T0.3 — extract resolved network for dynamic node label
+            _demo_network = (
+                demo_trace.get("iso_message", {}).get("network")
+                or demo_trace.get("request_sent", {}).get("network")
+                or "visa"
+            )
             n_ph   = st.empty()
             s_ph   = st.empty()
             p_ph   = st.empty()
@@ -256,8 +262,8 @@ if st.session_state.demo_mode:
                     break
                 idx      = (entry.get("step", 1) - 1)
                 node_idx = _STEP_NODE_MAP.get(idx + 1, 0)
-                n_ph.markdown(render_node_diagram(node_idx), unsafe_allow_html=True)
-                render_playback_step(entry, entry.get("step"), len(audit))
+                n_ph.markdown(render_node_diagram(node_idx, network=_demo_network), unsafe_allow_html=True)
+                render_playback_step(entry, entry.get("step"), len(audit), network=_demo_network)
                 payload = entry.get("payload") or {}
                 if payload:
                     lines = json.dumps(payload, indent=2).splitlines()

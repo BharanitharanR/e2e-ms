@@ -17,11 +17,12 @@ st.caption(
 )
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_gen, tab_explain, tab_coverage, tab_insights = st.tabs([
+tab_gen, tab_explain, tab_coverage, tab_insights, tab_mandate = st.tabs([
     "✨ Generate Scenario",
     "🔍 Explain Failure",
     "📊 Coverage Advisor",
     "📋 Suite Insights",
+    "📋 Mandate → Impl",
 ])
 
 # ── Tab 1: Generate Scenario ──────────────────────────────────────────────────
@@ -233,5 +234,209 @@ with tab_insights:
     st.markdown("---")
     st.caption(
         "💡 **Tip:** AI features require the `ANTHROPIC_API_KEY` environment variable "
-        "to be set on the backend service. Without it, these features return graceful errors."
+        "to be set on the backend service. Without it, these features return graceful errors. "
+        "You can also set the key via **AI Settings** (page 11)."
     )
+
+# ── Tab 5: Mandate → Implementation ──────────────────────────────────────────
+with tab_mandate:
+    st.subheader("📋 Mandate → Implementation")
+    st.caption(
+        "Paste a network mandate excerpt (e.g. Visa bulletin text). "
+        "Claude will propose **ISO-mapper additions**, **JPF/DB fields**, and **test scenarios**. "
+        "You review the diff — then click **Apply** to write the spec change and save the scenarios. "
+        "**No silent auto-apply** — every change requires explicit confirmation."
+    )
+
+    m_col1, m_col2 = st.columns([2, 1])
+
+    with m_col1:
+        mandate_text = st.text_area(
+            "Paste mandate excerpt here",
+            height=200,
+            key="mandate_text",
+            placeholder=(
+                "Example:\n"
+                "Visa mandate VBS-2024-07: Effective April 2025, acquirers processing "
+                "contactless mobile wallet transactions must populate DE 104 "
+                "(Transaction Category Code) with value '01' for Apple Pay, '02' for "
+                "Google Pay, and '03' for Samsung Pay. The field is alphanumeric AN-2."
+            ),
+        )
+        mandate_network = st.selectbox(
+            "Target network",
+            ["visa", "mastercard", "amex", "discover"],
+            key="mandate_network",
+        )
+
+        if st.button("🤖 Analyze Mandate with Claude", type="primary", key="mandate_analyze_btn"):
+            if not mandate_text.strip():
+                st.warning("Please paste a mandate excerpt.")
+            else:
+                with st.spinner("Analyzing mandate…"):
+                    result = api_post("/ai/mandate", {
+                        "mandate_text": mandate_text,
+                        "network":      mandate_network,
+                    })
+                if result and "error" not in result:
+                    st.session_state["mandate_proposal"] = result
+                    st.session_state["mandate_network"]  = mandate_network
+                    st.success("✅ Analysis complete — review the proposal below.")
+                else:
+                    st.error((result or {}).get("error", "AI service unavailable"))
+
+    with m_col2:
+        st.markdown("**Example mandates to try:**")
+        st.markdown("""
+- *Wallet indicator DE104: Apple Pay=01, Google Pay=02*
+- *Mastercard mandate: populate DE48.SE43 for recurring transactions*
+- *Amex mandate: DE47 must carry ANS-2 service code for airline MCCs 4511/4512*
+- *Discover: DE62 must include cashback amount when MCC=6011*
+""")
+
+    # ── Proposal display + review gate ────────────────────────────────────────
+    proposal = st.session_state.get("mandate_proposal")
+    if proposal:
+        st.markdown("---")
+        st.subheader("📝 AI Proposal — Review Required")
+
+        # Validation status
+        validation = proposal.get("_validation", {})
+        val_errors = validation.get("errors", [])
+        if val_errors:
+            st.error(f"⚠️ **{len(val_errors)} validation error(s) — CANNOT APPLY until fixed:**")
+            for err in val_errors:
+                st.markdown(f"- ❌ {err}")
+        else:
+            st.success("✅ Proposal passed all validation guardrails.")
+
+        # Design summary
+        st.markdown(f"**Design summary:** {proposal.get('design_summary', '—')}")
+        if proposal.get("validation_notes"):
+            st.info(f"ℹ️ {proposal['validation_notes']}")
+
+        # Tabs for each section
+        p_tabs = st.tabs([
+            "🗂️ ISO Mapper Additions",
+            "📊 JPF Fields",
+            "🗄️ DB Columns",
+            "🧪 Test Scenarios",
+        ])
+
+        with p_tabs[0]:
+            iso_adds = proposal.get("iso_mapping_additions", [])
+            if iso_adds:
+                import pandas as pd
+                rows = [
+                    {
+                        "Canonical JPF path": m.get("canonical", ""),
+                        "DE": m.get("source", {}).get("de", ""),
+                        "Transform": m.get("source", {}).get("transform", "passthrough"),
+                        "Network": m.get("network", "all"),
+                        "Description": m.get("description", ""),
+                    }
+                    for m in iso_adds
+                ]
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                # Show YAML diff
+                yaml_preview = "\n".join([
+                    f"  - canonical: {m.get('canonical','')}\n"
+                    f"    source:\n"
+                    f"      de: {m.get('source',{}).get('de','?')}\n"
+                    f"      transform: {m.get('source',{}).get('transform','passthrough')}\n"
+                    f"    description: \"{m.get('description','')}\""
+                    for m in iso_adds
+                ])
+                with st.expander("YAML diff (will be appended to spec file)", expanded=True):
+                    st.code(yaml_preview, language="yaml")
+            else:
+                st.caption("No ISO mapper additions proposed.")
+
+        with p_tabs[1]:
+            jpf_fields = proposal.get("jpf_fields", [])
+            if jpf_fields:
+                import pandas as pd
+                st.dataframe(pd.DataFrame(jpf_fields), use_container_width=True, hide_index=True)
+            else:
+                st.caption("No new JPF fields proposed.")
+
+        with p_tabs[2]:
+            db_cols = proposal.get("db_columns", [])
+            if db_cols:
+                import pandas as pd
+                st.dataframe(pd.DataFrame(db_cols), use_container_width=True, hide_index=True)
+            else:
+                st.caption("No new DB columns proposed.")
+
+        with p_tabs[3]:
+            scenarios = proposal.get("scenarios", [])
+            if scenarios:
+                for i, sc in enumerate(scenarios):
+                    with st.expander(f"Scenario {i+1}: {sc.get('name', sc.get('id','?'))}", expanded=(i==0)):
+                        st.json(sc)
+            else:
+                st.caption("No test scenarios proposed.")
+
+        # ── Apply gate ────────────────────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("✅ Apply Mandate Changes")
+
+        if val_errors:
+            st.error(
+                "Cannot apply — proposal has validation errors. "
+                "The AI proposal may have used an invalid DE number or non-test PAN. "
+                "Edit the proposal or re-run the analysis with a clearer mandate excerpt."
+            )
+        else:
+            st.warning(
+                "⚠️ **Review carefully before applying.** This will append YAML entries to "
+                f"`backend/mapping/specs/{st.session_state.get('mandate_network','visa')}.yaml` "
+                "and save the test scenarios. This action cannot be automatically undone."
+            )
+            confirm = st.checkbox(
+                "I have reviewed the proposal above and confirm it is correct",
+                key="mandate_confirm",
+            )
+            if st.button("🚀 Apply Mandate Changes", type="primary", key="mandate_apply_btn",
+                         disabled=not confirm):
+                with st.spinner("Applying…"):
+                    apply_result = api_post("/ai/mandate/apply", {
+                        "proposal":  proposal,
+                        "network":   st.session_state.get("mandate_network", "visa"),
+                        "confirmed": True,
+                    })
+                if apply_result and apply_result.get("status") == "applied":
+                    st.success(
+                        f"✅ Applied! {apply_result.get('additions_count', 0)} spec additions written. "
+                        f"Scenarios saved: {apply_result.get('scenarios_saved', [])}"
+                    )
+                    with st.expander("Applied YAML diff", expanded=True):
+                        st.code(apply_result.get("diff", ""), language="yaml")
+                    # Certify: run the mandate scenarios immediately
+                    saved_ids = apply_result.get("scenarios_saved", [])
+                    if saved_ids:
+                        st.markdown("---")
+                        st.subheader("🏅 Certify Mandate Scenarios")
+                        if st.button("▶ Run mandate scenarios now", key="mandate_certify"):
+                            cert_results = []
+                            for sc_id in saved_ids:
+                                with st.spinner(f"Running {sc_id}…"):
+                                    tr = api_post(f"/execute/{sc_id}")
+                                if tr:
+                                    cert_results.append({
+                                        "id":     sc_id,
+                                        "passed": tr.get("passed"),
+                                        "rc":     tr.get("actual_network_response_code"),
+                                    })
+                            if all(r.get("passed") for r in cert_results):
+                                st.success("✅ All mandate scenarios certified GREEN.")
+                            else:
+                                st.error("❌ Some scenarios failed — review.")
+                            import pandas as pd
+                            st.dataframe(pd.DataFrame(cert_results), use_container_width=True)
+                else:
+                    err_msg = (apply_result or {}).get("reason") or (apply_result or {}).get("error", "Unknown error")
+                    st.error(f"Apply failed: {err_msg}")
+                    if (apply_result or {}).get("errors"):
+                        for e in apply_result["errors"]:
+                            st.markdown(f"- ❌ {e}")

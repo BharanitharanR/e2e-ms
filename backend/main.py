@@ -92,6 +92,15 @@ except Exception:  # pragma: no cover
     ai_router = None
     _AI_AVAILABLE = False
 
+# Enrichment trace builder (T1.1 — Phase 5).
+try:
+    from backend.enrichment import build_enrichment_trace
+    _ENRICHMENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    _ENRICHMENT_AVAILABLE = False
+    def build_enrichment_trace(*args, **kwargs):  # type: ignore[misc]
+        return []
+
 ACQUIRER_URL = os.getenv("ACQUIRER_URL", "http://acquirer:8101/authorize")
 CUSTOMER_JIT_RESET_URL = os.getenv("CUSTOMER_JIT_RESET_URL", "http://customer_jit:8001/reset")
 CUSTOMER_JIT_URL = os.getenv("CUSTOMER_JIT_URL", "http://customer_jit:8001")
@@ -303,15 +312,15 @@ def _execute_scenario_internal(
             "step": 3,
             "actor": "Acquirer",
             "direction": "→",
-            "label": "Acquirer forwards ISO-8583 message to Visa network",
+            "label": f"Acquirer forwards ISO-8583 message to {resolved_network.capitalize()} network",
             "payload": request_dict,
             "timestamp": ts_outbound,
         },
         {
             "step": 4,
-            "actor": "Visa Network",
+            "actor": f"{resolved_network.capitalize()} Network",
             "direction": "→",
-            "label": "Visa network routes authorization request to Marqeta issuer processor",
+            "label": f"{resolved_network.capitalize()} network routes authorization request to Marqeta issuer processor",
             "payload": request_dict,
             "timestamp": ts_outbound,
         },
@@ -345,9 +354,9 @@ def _execute_scenario_internal(
         },
         {
             "step": 7,
-            "actor": "Visa Network",
+            "actor": f"{resolved_network.capitalize()} Network",
             "direction": "←",
-            "label": f"Visa returns network response code: {actual_rc}",
+            "label": f"{resolved_network.capitalize()} returns network response code: {actual_rc}",
             "payload": {
                 "response_code": response_json.get("response_code"),
                 "auth_code": response_json.get("auth_code"),
@@ -381,6 +390,16 @@ def _execute_scenario_internal(
         },
     ]
 
+    # ── T1.1 — Per-hop enrichment trace ─────────────────────────────────────
+    enrichment_trace = build_enrichment_trace(
+        request_dict=request_dict,
+        iso_message=iso_message,
+        jpf=jpf,
+        jit_payload=jit_decision_payload,
+        resolved_network=resolved_network,
+        response_json=response_json,
+    )
+
     trace = {
         "scenario_id": scenario.get("id"),
         "scenario_name": scenario.get("name"),
@@ -396,9 +415,11 @@ def _execute_scenario_internal(
         "duration_ms": duration_ms,
         "audit_trail": audit_trail,
         # ── Phase 1 additions (T5) ───────────────────────────────────────────
-        "iso_message":   iso_message,   # packed ISO 8583 artefacts
-        "jpf":           jpf,           # canonical JSON Payment Format
-        "iso_warnings":  iso_warnings,  # validation flags (e.g. EMV mismatches)
+        "iso_message":      iso_message,       # packed ISO 8583 artefacts
+        "jpf":              jpf,               # canonical JSON Payment Format
+        "iso_warnings":     iso_warnings,      # validation flags (e.g. EMV mismatches)
+        # ── Phase 5 additions (T1.1) ─────────────────────────────────────────
+        "enrichment_trace": enrichment_trace,  # per-hop ISO field additions
     }
 
     # Persist to SQLite.

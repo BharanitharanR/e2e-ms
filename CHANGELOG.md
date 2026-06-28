@@ -254,3 +254,153 @@ All notable changes to this project are documented here.
   test suites (`test_vertical_slice.py`, `test_lifecycle.py`, `test_phase3.py`) on every
   push/PR touching backend, tests, or the iso-engine.
 - **Total across all suites: 78 tests, 0 failures** (Python 3.14, no Docker required).
+
+---
+
+## [Unreleased] — Phase 5: Local Demo, AI Config, Dynamic Network Labels, Enrichment Trace, Mandate AI
+
+### T0.3 — Genericize hardcoded "Visa" labels in demo/audit trail
+- **Problem:** `demo_mode.py` hardcoded `("🌐", "Visa")` at node index 3; audit trail steps
+  used `"Visa Network"` literally — wrong for MC/Amex/Discover transactions.
+- **Fix:**
+  - `frontend/utils/demo_mode.py` completely reworked: `_BASE_NODES[3] = None` (sentinel);
+    `_build_nodes(network)` fills node 3 dynamically at render time with the resolved
+    network name, emoji and colour from `_NETWORK_EMOJI` / `_NETWORK_COLOURS` dicts.
+  - `render_node_diagram(active, network)` and `render_playback_step(..., network)` both
+    accept a `network` parameter — no Visa assumption.
+  - `backend/main.py` audit trail steps 3, 4, 7 use `f"{resolved_network.capitalize()} Network"`.
+  - `frontend/pages/02_scenario_lab.py` extracts `_demo_network` from the trace and passes
+    it to both render functions.
+- **Networks supported:** visa 🔵 `#1a1f71`, mastercard 🔴 `#eb001b`, amex 🔷 `#007bc1`,
+  discover 🟠 `#f76f20`.
+- **Tests:** `TestDynamicNetworkLabels` — 8 tests: node diagram colour per network,
+  `_BASE_NODES[3] is None`, audit step actor labels, 4-network coverage.
+
+### T0.1 — Local run profile: `start-local.sh` + `make demo-local`
+- **Problem:** Running the simulator without Docker failed because inter-service URLs were
+  Docker service names (`acquirer`, `visa-net`, etc.) that don't resolve on localhost.
+- **Fix:**
+  - Created `start-local.sh`: exports all inter-service env vars as `http://127.0.0.1:<port>`,
+    launches all 6 microservices as background `uvicorn` processes on ports 8001/8101/8102/8103/8000/8501,
+    health-checks each (up to 30 polls), runs a smoke test against `/execute/authorization_approve`,
+    then launches Streamlit. `trap cleanup EXIT INT TERM` kills all PIDs on Ctrl-C.
+  - Added `make demo-local` target in `Makefile`.
+  - Added "Option A — No Docker (host quickstart)" to `README.md` before Docker section.
+- **Tests:** `TestLocalRunProfile` — 4 tests: `start-local.sh` exists + is executable,
+  `Makefile` has `demo-local`, `README.md` has quickstart section.
+
+### T0.2 — In-app AI provider & key settings (UI + backend endpoints)
+- **Problem:** API keys could only be injected via Docker env vars; no way to set or
+  rotate keys without restarting the stack; no UI to switch primary LLM provider.
+- **Fix:**
+  - **`backend/ai_config.py`** (new): Fernet (AES-GCM) encrypted key store in
+    `~/.paycon/secrets` with `0o600` permissions. Machine-scoped Fernet key derived from
+    `sha256(uid + home)`. Public API: `set_api_key()`, `get_api_key()` (env first →
+    secrets), `get_key_status()` returns only `"detected"/"not detected"` — raw key
+    never returned. `provider_status()` strips key values from output. `get_active_provider_key()`
+    walks the fallback chain.
+  - **`backend/ai_routes.py`** (modified): `_call_claude()` reads key from `ai_config`
+    first, then env var. Added 4 new endpoints: `GET /ai/providers`,
+    `POST /ai/providers/config`, `POST /ai/providers/key`, `DELETE /ai/providers/key/{provider}`.
+  - **`frontend/pages/11_ai_settings.py`** (new): Provider chain config (primary +
+    ordered fallbacks), model/endpoint editable table with Key column colour-coded
+    (green=detected / red=not detected). Key management form uses `type="password"`;
+    `del entered_key` immediately after POST; key never assigned to session state.
+    Test-provider button. Security notes section.
+- **Security guarantee:** Key lookup order is env var → encrypted store → `None`. Raw
+  key values are never logged, never stored in session state, never echoed back in any API response.
+- **Tests:** `TestAiConfig` — 8 tests: provider_status no raw keys, key_status for
+  nonexistent, load_config returns dict, supported providers present, set/get/delete
+  roundtrip, short key rejected, `_call_claude` reads from config.
+  `TestAiProviderEndpoints` — 3 tests: `/ai/providers` returns 200, no raw keys in
+  response body, empty key body returns 400.
+
+### T1.1 — Per-hop enrichment trace backend (`enrichment_trace` in `/execute` response)
+- **Problem:** The audit trail showed hop actors but not *which ISO DEs* were added at
+  each hop — making it impossible to explain to customers exactly how a field like DE55
+  (EMV data) travelled through the network stack.
+- **Fix:** Created `backend/enrichment.py` with `build_enrichment_trace()`:
+  - 5 ordered hops: Terminal, Acquirer, Network, Issuer Processor, Customer JIT.
+  - Each hop returns `{actor, adds: [{de, name, value}], cumulative_iso}`.
+  - Hop-specific extras: Network adds `interchange_qualification`; Issuer Processor adds
+    `iso_to_jpf` (JPF field mapping + DB field list) and `jpf_to_jit` (webhook shape);
+    Customer JIT adds `decision` and `rc`.
+  - `_DE_NAMES` covers 30 standard DE labels; `_PRIVATE_DE_MAP` lists per-network
+    private DEs (visa: 44/62/63, mastercard: 48/61/63, amex: 47/63, discover: 62/63).
+  - Graceful degradation: `from backend.interchange import qualify` wrapped in `try/except`.
+  - `backend/main.py` imports `build_enrichment_trace` with `_ENRICHMENT_AVAILABLE` flag;
+    result added as `"enrichment_trace"` key in the trace dict response.
+- **Tests:** `TestEnrichmentTrace` — 9 tests: trace present in execute response, 5 hops,
+  correct actors, Terminal adds STAN, Acquirer adds merchant, Network has network field,
+  Issuer has `iso_to_jpf`, JIT has decision, Visa vs MC traces differ.
+
+### T1.2 — Horizontal enrichment visualization (`frontend/pages/12_enrichment_trace.py`)
+- New page showing the per-hop DE addition strip:
+  - Scenario selector at top + "Run new scenario" button.
+  - Horizontal `st.columns` strip — one column per hop, each with a coloured header.
+  - `_render_adds_table(adds)` shows field badges per hop inline.
+  - Per-hop expandable drill-down with 5 sub-tabs: Cumulative ISO (DataFrame), Interchange
+    (metrics), ISO→JPF (JSON + DB column table), JPF→JIT (JSON), JIT Decision (success/error).
+  - Use-case preset buttons at bottom: AUTH / ATM / PRE-AUTH run and navigate to the trace.
+
+### T1.3 — Use-case presets: AUTH / PRE-AUTH / ATM scenarios
+- Three new scenario JSON files in `backend/scenarios/`:
+  - **`atm_withdrawal_approve.json`** — ATM cash $20, MCC `6011`, `pos_entry_mode: "011"`.
+  - **`preauth_approve.json`** — Hotel pre-authorization $150, MCC `7011`, POS `071`.
+  - **`preauth_completion.json`** — Clearing advice $145, `event_type: "advice"`,
+    `original_transaction_id: "TXN_PREAUTH_001"` — demonstrates ledger link + partial completion.
+- **Tests:** `TestUseCasePresets` — 8 tests: files exist, ATM MCC is `6011`, ATM
+  entry mode is `011`, preauth MCC is `7011`, preauth entry mode is `071`, completion is
+  `advice` event type, completion links to `TXN_PREAUTH_001`, completion amount < preauth.
+
+### T2.1 — `POST /ai/mandate` — AI-driven mandate analysis endpoint
+- **Problem:** No structured way to translate a plain-English network mandate document
+  into concrete ISO field additions, JPF schema changes, and DB migrations.
+- **Fix:** New `POST /ai/mandate` endpoint in `backend/ai_routes.py`:
+  - Sends mandate text + network to Claude with `_MANDATE_SYSTEM` prompt.
+  - Claude returns structured JSON: `{design_summary, iso_mapping_additions,
+    jpf_fields, db_columns, scenarios, validation_notes}`.
+  - `_validate_mandate_proposal()` enforces guardrails: DE numbers 1-128 only; test BINs
+    only (`4111`, `5555`, `3782`, `6011`, `4000`, `5200`); valid JPF types
+    (`STRING`, `INTEGER`, `BOOLEAN`, `DECIMAL`, `DATETIME`, `BYTES`); valid DB column
+    types; `canonical` field not missing from ISO additions.
+  - Returns proposal + `validation_errors` list; caller decides whether to proceed.
+
+### T2.2 — Mandate UI workflow (`frontend/pages/07_ai_copilot.py`, tab 5)
+- Fifth tab "📋 Mandate → Impl" added to AI Copilot page:
+  - Paste mandate text + select network → Analyze button → `POST /ai/mandate`.
+  - Proposal stored in `st.session_state.mandate_proposal`.
+  - Review panel: validation errors shown in red warning blocks. Design summary, ISO
+    Additions table (with YAML diff expander), JPF Fields, DB Columns, Test Scenarios
+    across 4 sub-tabs.
+  - Apply gate: validation errors shown as blocking banner, OR user checks
+    "I have reviewed the proposal and confirm it is correct" → Apply button →
+    `POST /ai/mandate/apply` with `confirmed=True`.
+  - Certify step: runs each scenario ID from the proposal via `/execute/{sc_id}`,
+    shows pass/fail result table.
+- `frontend/utils/session_state.py` — added `mandate_proposal`, `mandate_network`,
+  `ai_last_run` defaults.
+
+### T2.3 — Review gate & guardrails (`POST /ai/mandate/apply`)
+- `POST /ai/mandate/apply` in `backend/ai_routes.py`:
+  - Rejects with HTTP 400 if `confirmed != true` (review gate).
+  - Re-runs `_validate_mandate_proposal()` and rejects with HTTP 422 if any errors remain
+    (double-lock: client-side check + server-side re-validation).
+  - On success: appends YAML block to `backend/mapping/specs/<network>.yaml` (auditable
+    append, never overwrite). Saves each generated scenario via `mongo_repository.save_scenario()`.
+  - Returns `{status: "applied", scenarios_saved: [...], spec_file: "..."}`.
+- **Tests:** `TestMandateGuardrails` — 9 tests: valid proposal passes validation, bad DE
+  number fails, non-integer DE fails, non-test PAN fails, test PAN passes, bad JPF type
+  fails, missing canonical fails, `apply` without `confirmed=True` → HTTP 400, `apply`
+  with invalid proposal → HTTP 422.
+
+### Phase 5 test suite (`tests/test_phase5.py`)
+- **49 tests across 7 test classes** — all pass with no Docker required:
+  - `TestDynamicNetworkLabels` (8): T0.3 dynamic network colour/emoji/label
+  - `TestLocalRunProfile` (4): T0.1 start-local.sh, Makefile, README
+  - `TestAiConfig` (8): T0.2 encrypted key store safety + provider chain
+  - `TestEnrichmentTrace` (9): T1.1 hop structure, actors, field additions
+  - `TestUseCasePresets` (8): T1.3 ATM / pre-auth / clearing scenario files
+  - `TestMandateGuardrails` (9): T2.1–T2.3 guardrails + review gate
+  - `TestAiProviderEndpoints` (3): T0.2 `/ai/providers` endpoint contract
+- **Total across all suites: 127 tests, 0 failures** (Python 3.14, no Docker required).

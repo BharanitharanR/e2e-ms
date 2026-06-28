@@ -1,0 +1,25 @@
+{
+  "id": "preauth_approve",
+  "name": "Pre-Authorization (Hotel Hold) — Approve",
+  "description": "Hotel pre-authorization hold for $150. The card is tapped at check-in; the full amount is reserved. A subsequent clearing advice (preauth_completion) carries the actual amount. Shows how PRE-AUTH enrichment differs from a standard purchase — different processing code and the audit link to the completion.",
+  "event_type": "authorization",
+  "tags": ["preauth", "hotel", "hold", "enrichment-demo"],
+  "request": {
+    "transaction_id": "TXN_PREAUTH_001",
+    "pan": "4111111111111111",
+    "amount": 15000,
+    "currency": "840",
+    "mcc": "7011",
+    "merchant_name": "Grand Hotel SF",
+    "merchant_city": "San Francisco",
+    "merchant_state": "CA",
+    "merchant_country": "USA",
+    "pos_entry_mode": "071",
+    "terminal_id": "HOTEL001",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456",
+    "notes": "PRE-AUTH: processing_code=000000 + pos_condition_code=01 indicates pre-auth"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
+}

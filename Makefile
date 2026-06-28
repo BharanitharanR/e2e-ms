@@ -32,7 +32,10 @@ help:
 	@echo ""
 	@echo "$(BOLD)e2MS — Marqeta E2E Simulator$(RESET)"
 	@echo ""
-	@echo "$(BOLD)Demo (no Ollama/MongoDB required):$(RESET)"
+	@echo "$(BOLD)Local demo (no Docker, no Ollama, no MongoDB):$(RESET)"
+	@echo "  $(GREEN)make demo-local$(RESET)    Start full stack on localhost (6 services + Streamlit)"
+	@echo ""
+	@echo "$(BOLD)Docker demo (recommended for pitch / shared environments):$(RESET)"
 	@echo "  $(GREEN)make demo$(RESET)          Start 6-service demo stack and open UI URL"
 	@echo "  $(GREEN)make demo-build$(RESET)    Force-rebuild images then start demo"
 	@echo "  $(GREEN)make demo-stop$(RESET)     Stop the demo stack (keep volumes)"
@@ -44,10 +47,11 @@ help:
 	@echo "  $(GREEN)make logs$(RESET)          Tail all container logs"
 	@echo ""
 	@echo "$(BOLD)Tests (no Docker):$(RESET)"
-	@echo "  $(GREEN)make test$(RESET)                Run all pytest suites (78 tests)"
+	@echo "  $(GREEN)make test$(RESET)                Run all pytest suites (127 tests)"
 	@echo "  $(GREEN)make test-vertical-slice$(RESET)  Phase 1 ISO/JPF vertical-slice tests (26)"
 	@echo "  $(GREEN)make test-lifecycle$(RESET)        Phase 2 lifecycle ledger tests (12)"
 	@echo "  $(GREEN)make test-phase3$(RESET)           Phase 3 network/settlement/interchange/jPOS tests (40)"
+	@echo "  $(GREEN)make test-phase5$(RESET)           Phase 5 local-demo/AI-config/enrichment/mandate tests (49)"
 	@echo ""
 	@echo "$(BOLD)Utilities:$(RESET)"
 	@echo "  $(GREEN)make pos-simulate$(RESET)  Run the PC/SC agent in software-simulation mode"
@@ -62,6 +66,13 @@ demo:
 	@echo ""
 	@echo "$(BOLD)Starting e2MS demo stack…$(RESET)"
 	@bash demo.sh
+
+.PHONY: demo-local
+demo-local:
+	@echo ""
+	@echo "$(BOLD)Starting e2MS local stack (no Docker)…$(RESET)"
+	@echo "$(BLUE)Logs will appear in .runlogs/ — press Ctrl-C to stop.$(RESET)"
+	@bash start-local.sh
 
 .PHONY: demo-build
 demo-build:
@@ -94,9 +105,9 @@ logs:
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 .PHONY: test
-test: test-vertical-slice test-lifecycle test-phase3
+test: test-vertical-slice test-lifecycle test-phase3 test-phase5
 	@echo ""
-	@echo "$(GREEN)$(BOLD)All test suites passed! (78 tests)$(RESET)"
+	@echo "$(GREEN)$(BOLD)All test suites passed! (127 tests)$(RESET)"
 
 .PHONY: test-vertical-slice
 test-vertical-slice:
@@ -112,6 +123,11 @@ test-lifecycle:
 test-phase3:
 	@echo "$(BOLD)Running Phase 3 tests (network routing, settlement, interchange, jPOS)…$(RESET)"
 	$(PYTEST) tests/test_phase3.py -v --tb=short
+
+.PHONY: test-phase5
+test-phase5:
+	@echo "$(BOLD)Running Phase 5 tests (local demo, AI config, enrichment trace, mandate)…$(RESET)"
+	$(PYTEST) tests/test_phase5.py -v --tb=short
 
 
 # ── POS agent ─────────────────────────────────────────────────────────────────
