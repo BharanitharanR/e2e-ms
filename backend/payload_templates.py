@@ -79,7 +79,14 @@ class MarqetaWebhookPayload:
             },
             "acquiring_institution_id": request.acquiring_institution_id,
             "forwarding_institution_id": getattr(request, "forwarding_institution_id", ""),
-            "network": "VISANET",
+            # T0.2: map the resolved network (stamped on request by the orchestrator)
+            # to its canonical scheme name; fallback to VISANET for compat.
+            "network": {
+                "visa":       "VISANET",
+                "mastercard": "BANKNET",
+                "amex":       "AMSNET",
+                "discover":   "PULSE",
+            }.get(str(getattr(request, "network", "") or "").lower(), "VISANET"),
         }
 
         # DE55 — ICC / EMV chip data: include in transaction block when present.

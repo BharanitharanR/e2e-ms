@@ -1,0 +1,172 @@
+name: Phase 3 — Network Routing, Settlement, Interchange & jPOS CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - "backend/**"
+      - "tests/test_phase3.py"
+      - "tests/test_vertical_slice.py"
+      - "tests/test_lifecycle.py"
+      - "frontend/pages/10_transaction_builder.py"
+      - "iso-engine/**"
+      - ".github/workflows/phase3_ci.yml"
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Job 1: Phase 3 unit tests (no Docker, no jPOS sidecar required)
+  #
+  # Covers:
+  #   T0.2  Authoritative network routing (TestNetworkStamping)
+  #   T0.3  Per-network test card presets (TestAdhocValidation)
+  #   T0.4  JIT audit step always populated (TestJitAuditStep)
+  #   T1.1  Settlement generation + validation (TestSettlementGeneration)
+  #   T1.3  Interchange qualification (TestInterchangeQualification)
+  #   T2.1  jPOS bridge graceful degradation (TestJposBridge)
+  #   T2.3  PAN guard / no track-2 in request (TestPanGuard)
+  # ──────────────────────────────────────────────────────────────────────────
+  phase3-tests:
+    name: "Phase 3 — 40 Unit Tests"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            pyiso8583 \
+            pyyaml \
+            fastapi \
+            uvicorn \
+            pydantic \
+            requests \
+            httpx \
+            pytest \
+            pytest-anyio \
+            anthropic
+
+      - name: Run Phase 3 tests
+        run: |
+          python -m pytest tests/test_phase3.py -v \
+            --tb=short \
+            --junit-xml=test-results/phase3.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3-test-results
+          path: test-results/
+          retention-days: 30
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Job 2: Full regression gate (all three suites)
+  # Runs on every PR to main — must be green before merge.
+  # ──────────────────────────────────────────────────────────────────────────
+  full-regression:
+    name: "Full Regression — 78 Tests (PR Gate)"
+    runs-on: ubuntu-latest
+    needs: []  # Run in parallel with phase3-tests
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install all test dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            pyiso8583 \
+            pyyaml \
+            fastapi \
+            uvicorn \
+            pydantic \
+            requests \
+            httpx \
+            pytest \
+            pytest-anyio \
+            anthropic
+
+      - name: "Phase 1 — Vertical-slice tests (26)"
+        run: |
+          python -m pytest tests/test_vertical_slice.py -v \
+            --tb=short \
+            --junit-xml=test-results/vertical_slice.xml
+
+      - name: "Phase 2 — Lifecycle ledger tests (12)"
+        run: |
+          python -m pytest tests/test_lifecycle.py -v \
+            --tb=short \
+            --junit-xml=test-results/lifecycle.xml
+
+      - name: "Phase 3 — Network / Settlement / Interchange tests (40)"
+        run: |
+          python -m pytest tests/test_phase3.py -v \
+            --tb=short \
+            --junit-xml=test-results/phase3.xml
+
+      - name: Upload combined results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-regression-results
+          path: test-results/
+          retention-days: 30
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Job 3: jPOS sidecar build check (Maven compile — no Docker push)
+  # Validates the iso-engine Maven project compiles cleanly.
+  # Skipped if the iso-engine/ directory has no changes.
+  # ──────────────────────────────────────────────────────────────────────────
+  jpos-build:
+    name: "T2.1 — jPOS Sidecar Maven Build"
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       contains(toJSON(github.event.pull_request.changed_files), 'iso-engine/'))
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if iso-engine exists
+        id: check-iso-engine
+        run: |
+          if [ -f "iso-engine/pom.xml" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up JDK 17
+        if: steps.check-iso-engine.outputs.exists == 'true'
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: "maven"
+
+      - name: Maven compile (iso-engine)
+        if: steps.check-iso-engine.outputs.exists == 'true'
+        working-directory: iso-engine
+        run: mvn compile -B -q
+
+      - name: Skip message
+        if: steps.check-iso-engine.outputs.exists == 'false'
+        run: echo "iso-engine/pom.xml not found — skipping jPOS build check."

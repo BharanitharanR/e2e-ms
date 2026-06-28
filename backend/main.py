@@ -47,6 +47,22 @@ try:
 except ImportError:
     from chip_terminal import SoftwareCardEmulator
 
+# Settlement engine (T1.1 — Phase 3).
+try:
+    from backend.settlement import router as settlement_router
+    _SETTLEMENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    settlement_router = None
+    _SETTLEMENT_AVAILABLE = False
+
+# Interchange engine (T1.3 — Phase 3).
+try:
+    from backend.interchange import router as interchange_router
+    _INTERCHANGE_AVAILABLE = True
+except Exception:  # pragma: no cover
+    interchange_router = None
+    _INTERCHANGE_AVAILABLE = False
+
 # SQLite persistence layer.
 try:
     from backend.db import (
@@ -89,6 +105,14 @@ app = FastAPI(title="Marqeta E2E Simulator Orchestrator")
 # Attach AI routes if available.
 if ai_router is not None:
     app.include_router(ai_router)
+
+# Attach settlement router (T1.1).
+if settlement_router is not None:
+    app.include_router(settlement_router)
+
+# Attach interchange router (T1.3).
+if interchange_router is not None:
+    app.include_router(interchange_router)
 
 # Module-level chip card emulator singleton.
 _chip_emulator = SoftwareCardEmulator()
@@ -176,17 +200,22 @@ def _execute_scenario_internal(
     else:
         request_dict["event_type"] = "authorization"
 
-    # ── ISO 8583 origination + JPF mapping (T3/T4) ──────────────────────────
-    # Build the 0100 from the scenario request and map it to the canonical JPF.
-    # This runs in-process; it does NOT affect the HTTP path to the acquirer.
+    # ── ISO 8583 origination + JPF mapping (T3/T4, T0.2) ────────────────────
+    # Resolve network ONCE here; stamp it on request_dict so the entire live
+    # HTTP chain (acquirer → visa → marqeta_simulator) sees the real network.
+    # The marqeta_simulator reads body["network"] to tag ledger entries and
+    # pgfs.* webhooks, making the network authoritative end-to-end (T0.2).
     iso_message: dict = {}
     jpf: dict = {}
     iso_warnings: list = []
+
+    # Resolve network — override > scenario field > BIN routing
+    _net_override = network_override or scenario.get("network")
+    resolved_network: str = "visa"  # fallback default
     if _ISO_AVAILABLE:
         try:
-            # Resolve network from scenario or override; default → BIN routing
-            _net_override = network_override or scenario.get("network")
             orig = build_0100(request_dict, network_override=_net_override)
+            resolved_network = orig.network
             iso_message = {
                 "network":       orig.network,
                 "mti":           orig.mti,
@@ -206,6 +235,12 @@ def _execute_scenario_internal(
             iso_warnings = map_result.warnings
         except Exception as exc:  # pragma: no cover
             iso_message = {"error": str(exc)}
+    elif _net_override:
+        resolved_network = _net_override
+
+    # T0.2 — stamp resolved network onto the live HTTP payload so the issuer
+    # ledger and pgfs.* webhooks reflect the real network, not "unknown".
+    request_dict["network"] = resolved_network
 
     ts_outbound = datetime.now(timezone.utc).isoformat()
 
@@ -230,6 +265,22 @@ def _execute_scenario_internal(
     marqeta_event_type = response_json.get("marqeta_webhook_event_type")
     jit_method = response_json.get("jit_funding_method")
     customer_body = response_json.get("customer_response_body")
+
+    # T0.4 — Ensure the step-6 JIT payload is always a populated dict so
+    # the demo-mode JIT node renders a meaningful response (not a blank panel).
+    jit_decision_payload: dict = {
+        "decision":      actual_dec or "UNKNOWN",
+        "rc":            actual_rc  or "?",
+        "network":       resolved_network,
+        "jit_method":    jit_method or "pgfs.authorization",
+        "event_type":    marqeta_event_type or "transaction.authorization",
+        "transaction_id": request_dict.get("transaction_id"),
+        "amount":        request_dict.get("amount"),
+        "currency":      request_dict.get("currency"),
+    }
+    if isinstance(customer_body, dict):
+        # Merge the raw customer body on top so any custom fields are visible.
+        jit_decision_payload.update({k: v for k, v in customer_body.items() if v is not None})
 
     audit_trail = [
         {
@@ -288,8 +339,8 @@ def _execute_scenario_internal(
             "step": 6,
             "actor": "Customer JIT (System Under Test)",
             "direction": "←",
-            "label": f"Customer JIT decision: {actual_dec}",
-            "payload": customer_body,
+            "label": f"Customer JIT decision: {actual_dec} (RC: {actual_rc})",
+            "payload": jit_decision_payload,   # T0.4: always populated
             "timestamp": ts_inbound,
         },
         {
@@ -367,6 +418,51 @@ async def health():
     return {"status": "ok", "service": "orchestrator"}
 
 
+@app.get("/iso-engine/health")
+async def iso_engine_health():
+    """Proxy health check to the jPOS ISO engine sidecar (T2.1)."""
+    try:
+        from backend.network.jpos_bridge import health as jpos_health
+    except ImportError:
+        from network.jpos_bridge import health as jpos_health  # type: ignore
+    return jpos_health()
+
+
+@app.post("/iso-engine/pack")
+async def iso_engine_pack(request: Request):
+    """Delegate pack to jPOS sidecar (T2.1). Falls back to Python packer."""
+    try:
+        from backend.network.jpos_bridge import pack_via_jpos
+    except ImportError:
+        from network.jpos_bridge import pack_via_jpos  # type: ignore
+    body = await request.json()
+    result = pack_via_jpos(
+        fields=body.get("fields", {}),
+        network=body.get("network", "visa"),
+        mti=body.get("mti", "0100"),
+    )
+    if result is None:
+        return {"error": "jPOS sidecar unavailable — ISO_ENGINE_URL not set or unreachable"}
+    return {"hex": result.hex, "network": result.network, "mti": result.mti}
+
+
+@app.post("/iso-engine/unpack")
+async def iso_engine_unpack(request: Request):
+    """Delegate unpack to jPOS sidecar (T2.1). Falls back to Python packer."""
+    try:
+        from backend.network.jpos_bridge import unpack_via_jpos
+    except ImportError:
+        from network.jpos_bridge import unpack_via_jpos  # type: ignore
+    body = await request.json()
+    result = unpack_via_jpos(
+        hex_str=body.get("hex", ""),
+        network=body.get("network", "visa"),
+    )
+    if result is None:
+        return {"error": "jPOS sidecar unavailable — ISO_ENGINE_URL not set or unreachable"}
+    return {"fields": result.fields, "mti": result.mti, "network": result.network}
+
+
 @app.get("/health/all")
 async def health_all():
     """Check health of every service in the stack and return aggregated status."""
@@ -442,6 +538,157 @@ async def execute(
     if scenario is None:
         return {"error": f"scenario '{scenario_id}' not found"}
     return _execute_scenario_internal(scenario, unique=unique, network_override=network)
+
+
+# --------------------------------------------------------------------------- #
+# Ad-hoc execute endpoint (T0.1 — Transaction Builder)
+# --------------------------------------------------------------------------- #
+# Valid test-card PAN presets per network (T0.3).
+_TEST_CARD_PRESETS = {
+    "visa":       {"pan": "4111111111111111", "pan_length": 16, "expiry": "1228"},
+    "mastercard": {"pan": "5555555555554444", "pan_length": 16, "expiry": "1228"},
+    "amex":       {"pan": "378282246310005",  "pan_length": 15, "expiry": "1228"},
+    "discover":   {"pan": "6011111111111117", "pan_length": 16, "expiry": "1228"},
+}
+
+_LUHN_EXEMPT_PRESETS = {
+    p["pan"] for p in _TEST_CARD_PRESETS.values()
+}
+
+
+def _luhn_check(pan: str) -> bool:
+    """Luhn algorithm — returns True if PAN is valid."""
+    digits = [int(d) for d in pan if d.isdigit()]
+    odd_digits = digits[-1::-2]
+    even_digits = digits[-2::-2]
+    total = sum(odd_digits)
+    for d in even_digits:
+        total += sum(divmod(d * 2, 10))
+    return total % 10 == 0
+
+
+def _detect_network_from_pan(pan: str) -> str:
+    """Lightweight BIN detection for validation warnings (no YAML load)."""
+    p = pan.replace(" ", "")
+    if p.startswith(("34", "37")):
+        return "amex"
+    if p.startswith("6011") or p.startswith("65"):
+        return "discover"
+    if p.startswith("5") and 2221 <= int(p[:4]) <= 2720:
+        return "mastercard"
+    if p.startswith(("51", "52", "53", "54", "55")):
+        return "mastercard"
+    if p.startswith("4"):
+        return "visa"
+    return "unknown"
+
+
+@app.post("/execute_adhoc")
+async def execute_adhoc(request: Request):
+    """Build and immediately execute an ad-hoc transaction from a flexible body.
+
+    Body fields (all optional with sensible defaults):
+        pan             str   — card PAN (16 digits for Visa/MC/Disc; 15 for Amex)
+        network         str   — visa | mastercard | amex | discover | auto (default)
+        amount          int   — minor units / cents (default 1000 = $10.00)
+        currency        str   — ISO 4217 numeric (default "840" = USD)
+        mcc             str   — 4-digit MCC (default "5411")
+        merchant_name   str
+        pos_entry_mode  str   — chip|contactless|magstripe|manual|ecommerce|071|051…
+        expiry          str   — YYMM or MMYY (informational; carried in DE14)
+        expected_rc     str   — expected network response code (default "00")
+        expected_decision str — APPROVED | DECLINED (default "APPROVED")
+
+    Returns the full execution trace (same shape as /execute).
+    Validation warnings (PAN–network mismatch, Luhn fail, Amex length) are
+    included in the trace as `adhoc_warnings`.
+    """
+    body = await request.json()
+
+    network_choice = (body.get("network") or "auto").lower()
+    if network_choice == "auto":
+        network_override = None
+    else:
+        network_override = network_choice
+
+    # PAN — default to the preset for the chosen network, or Visa if auto
+    _preset_net = network_choice if network_choice != "auto" else "visa"
+    default_pan = _TEST_CARD_PRESETS.get(_preset_net, _TEST_CARD_PRESETS["visa"])["pan"]
+    pan = (body.get("pan") or default_pan).replace(" ", "").replace("-", "")
+
+    # Validation warnings
+    adhoc_warnings: list[str] = []
+    detected = _detect_network_from_pan(pan)
+
+    # PAN length check
+    expected_len = 15 if detected == "amex" else 16
+    if len(pan) not in (15, 16):
+        adhoc_warnings.append(
+            f"PAN length {len(pan)} is unusual (expected 15 for Amex, 16 for others)."
+        )
+    elif detected == "amex" and len(pan) != 15:
+        adhoc_warnings.append(
+            f"Amex PAN should be 15 digits; got {len(pan)}."
+        )
+
+    # Luhn check (skip for known test presets)
+    if pan not in _LUHN_EXEMPT_PRESETS and not _luhn_check(pan):
+        adhoc_warnings.append(f"PAN fails Luhn check — verify the card number.")
+
+    # Network vs BIN consistency
+    if network_override and detected not in ("unknown",) and detected != network_override:
+        adhoc_warnings.append(
+            f"PAN BIN ({pan[:6]}) routes to '{detected}' but network is forced to "
+            f"'{network_override}'. Issuer may reject or mislabel the transaction."
+        )
+
+    # POS entry mode aliases
+    _entry_aliases = {
+        "chip":        "051",
+        "contactless": "071",
+        "magstripe":   "011",
+        "manual":      "010",
+        "ecommerce":   "810",
+    }
+    pos_mode = str(body.get("pos_entry_mode", "071"))
+    pos_mode = _entry_aliases.get(pos_mode.lower(), pos_mode)
+
+    scenario = {
+        "id":   f"adhoc_{int(time.time())}",
+        "name": body.get("name", "Ad-hoc transaction"),
+        "description": "Ad-hoc transaction from Transaction Builder",
+        "event_type": body.get("event_type", "authorization"),
+        "request": {
+            "transaction_id": body.get("transaction_id", f"ADHOC_{int(time.time())}"),
+            "pan":            pan,
+            "amount":         int(body.get("amount", 1000)),
+            "currency":       str(body.get("currency", "840")),
+            "mcc":            str(body.get("mcc", "5411")),
+            "merchant_name":  body.get("merchant_name", "Ad-hoc Merchant"),
+            "merchant_city":  body.get("merchant_city", "San Francisco"),
+            "merchant_state": body.get("merchant_state", "CA"),
+            "merchant_country": body.get("merchant_country", "USA"),
+            "pos_entry_mode": pos_mode,
+            "terminal_id":    body.get("terminal_id", "TERM9999"),
+            "acquiring_institution_id": "123456",
+            "forwarding_institution_id": "123456",
+            "datetime": datetime.now(timezone.utc).isoformat(),
+        },
+        "expected_network_response_code": body.get("expected_rc", "00"),
+        "expected_customer_decision":     body.get("expected_decision", "APPROVED"),
+        "tags": ["adhoc"],
+    }
+
+    trace = _execute_scenario_internal(scenario, unique=True, network_override=network_override)
+    trace["adhoc_warnings"] = adhoc_warnings
+    trace["detected_network"] = detected
+    return trace
+
+
+@app.get("/network/test_cards")
+async def get_test_cards():
+    """Return per-network test card presets (T0.3)."""
+    return _TEST_CARD_PRESETS
 
 
 # --------------------------------------------------------------------------- #
@@ -1054,6 +1301,165 @@ async def certify(request: Request):
         },
         "certified": certified,
         "threshold": threshold,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# DB validation endpoint (T1.2 — data-at-rest vs data-in-motion)
+# --------------------------------------------------------------------------- #
+
+@app.get("/validate/db/{transaction_id}")
+async def validate_db_transaction(transaction_id: str):
+    """Cross-reference the persisted DB record against the live ledger entry.
+
+    Checks for field drift between:
+      - The request_json stored in SQLite (data-at-rest)
+      - The live issuer ledger entry in marqeta_simulator (data-in-motion)
+
+    Returns a validation report with any mismatches found.
+    """
+    # Pull the DB record
+    db_result = get_transactions_page(page=1, limit=1, scenario_id=transaction_id)
+    db_items = db_result.get("items", [])
+
+    # Also search by transaction_id field inside request_json
+    # (scenario_id != transaction_id in most cases)
+    db_record = None
+    if db_items:
+        db_record = db_items[0]
+    else:
+        # Search all recent transactions for a matching transaction_id in the request
+        all_txns = get_recent_transactions(limit=500)
+        for t in all_txns:
+            req_json = t.get("request_json") or {}
+            if isinstance(req_json, str):
+                try:
+                    req_json = json.loads(req_json)
+                except Exception:
+                    req_json = {}
+            if req_json.get("transaction_id") == transaction_id:
+                db_record = t
+                break
+
+    if db_record is None:
+        return {
+            "found":      False,
+            "valid":      False,
+            "errors":     [{"code": "NOT_FOUND",
+                            "message": f"transaction_id '{transaction_id}' not in DB"}],
+            "warnings":   [],
+        }
+
+    # Pull the ledger entry
+    try:
+        ledger_resp = requests.get(
+            f"{MARQETA_SIM_URL}/issuer/ledger",
+            params={"transaction_id": transaction_id},
+            timeout=5,
+        )
+        if ledger_resp.status_code == 404:
+            ledger_entry = None
+        else:
+            ledger_entry = ledger_resp.json()
+    except requests.RequestException:
+        ledger_entry = None
+
+    errors   = []
+    warnings = []
+
+    req_json = db_record.get("request_json") or {}
+    if isinstance(req_json, str):
+        try:
+            req_json = json.loads(req_json)
+        except Exception:
+            req_json = {}
+
+    resp_json = db_record.get("response_json") or {}
+    if isinstance(resp_json, str):
+        try:
+            resp_json = json.loads(resp_json)
+        except Exception:
+            resp_json = {}
+
+    # DB-only checks
+    db_amount   = req_json.get("amount")
+    db_currency = req_json.get("currency")
+    db_network  = req_json.get("network")
+
+    if ledger_entry:
+        # Amount reconciliation
+        ledger_amount = ledger_entry.get("amount")
+        if db_amount is not None and ledger_amount is not None:
+            if int(db_amount) != int(ledger_amount):
+                errors.append({
+                    "code":    "AMOUNT_DRIFT",
+                    "message": (
+                        f"amount mismatch: DB has {db_amount}, "
+                        f"ledger has {ledger_amount}"
+                    ),
+                    "db_value":     db_amount,
+                    "ledger_value": ledger_amount,
+                })
+
+        # Currency reconciliation
+        ledger_currency = ledger_entry.get("currency")
+        if db_currency and ledger_currency and db_currency != ledger_currency:
+            errors.append({
+                "code":    "CURRENCY_DRIFT",
+                "message": (
+                    f"currency mismatch: DB has {db_currency!r}, "
+                    f"ledger has {ledger_currency!r}"
+                ),
+                "db_value":     db_currency,
+                "ledger_value": ledger_currency,
+            })
+
+        # Network reconciliation
+        ledger_network = ledger_entry.get("network")
+        if db_network and ledger_network:
+            if db_network.lower() != ledger_network.lower():
+                errors.append({
+                    "code":    "NETWORK_DRIFT",
+                    "message": (
+                        f"network mismatch: DB has {db_network!r}, "
+                        f"ledger has {ledger_network!r}"
+                    ),
+                    "db_value":     db_network,
+                    "ledger_value": ledger_network,
+                })
+
+        # State sanity
+        ledger_state = ledger_entry.get("state", "UNKNOWN")
+        db_passed    = db_record.get("passed", False)
+        if not db_passed and ledger_state == "CLEARED":
+            warnings.append(
+                f"Transaction is CLEARED in ledger but marked FAILED in DB "
+                f"(RC={db_record.get('actual_rc')})."
+            )
+    else:
+        warnings.append(
+            f"Transaction '{transaction_id}' not found in live ledger "
+            "(may be a declined auth or from a prior run)."
+        )
+
+    return {
+        "found":        True,
+        "transaction_id": transaction_id,
+        "valid":        len(errors) == 0,
+        "errors":       errors,
+        "warnings":     warnings,
+        "db_record": {
+            "scenario_id":   db_record.get("scenario_id"),
+            "event_type":    db_record.get("event_type"),
+            "amount":        db_amount,
+            "currency":      db_currency,
+            "network":       db_network,
+            "actual_rc":     db_record.get("actual_rc"),
+            "actual_decision": db_record.get("actual_decision"),
+            "passed":        db_record.get("passed"),
+            "timestamp":     db_record.get("timestamp"),
+        },
+        "ledger_entry": ledger_entry,
     }
 
 

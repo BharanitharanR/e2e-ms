@@ -127,3 +127,130 @@ All notable changes to this project are documented here.
   via host env or `.env` file with no code changes.
 - **Verification:** `inspect.getsource(_call_claude)` confirms `ANTHROPIC_MODEL` is read;
   model string `claude-opus-4-5` is a valid current Claude API model.
+
+---
+
+## [Unreleased] — Phase 3: Authoritative Network Routing, Transaction Builder, Settlement, Interchange & jPOS Sidecar
+
+### T0.2 — Authoritative network routing on the live HTTP path
+- **Problem:** Network was resolved for display/audit only; the live POST to the acquirer
+  microservice carried `network: "unknown"` in the body, so the issuer ledger and
+  `pgfs.*` webhook events were tagged incorrectly.
+- **Fix:** In `_execute_scenario_internal`, resolved network is now stamped onto
+  `request_dict["network"] = resolved_network` **before** the live POST. Since
+  `acquirer.py` → `visa.py` are thin pass-throughs, the field propagates transparently to
+  `marqeta_simulator`, which already reads `body.get("network", "unknown")` when creating
+  ledger entries.
+- **payload_templates.py:** Changed hardcoded `"network": "VISANET"` to a dynamic lookup:
+  `{"visa": "VISANET", "mastercard": "BANKNET", "amex": "AMSNET", "discover": "PULSE"}`.
+- **Tests:** `TestNetworkStamping` — 6 tests: Visa/Amex/MC/Discover BIN routing, override
+  wins, ISO network field == `request_dict["network"]` after the combined block.
+
+### T0.3 — Per-network test card presets (correct PANs + Luhn-valid)
+- Added `_TEST_CARD_PRESETS` dict in `backend/main.py`:
+  - Visa: `4111111111111111` (16 digits, starts with 4)
+  - Mastercard: `5555555555554444` (16 digits, starts with 5)
+  - **Amex: `378282246310005` (15 digits, starts with 37)**
+  - Discover: `6011111111111117` (16 digits, starts with 6011)
+- Added `_detect_network_from_pan()` lightweight BIN detector (no YAML load).
+- Added `_luhn_check()` standard Luhn-10 validator.
+- Added `_LUHN_EXEMPT_PRESETS` set for test PANs that are already known-valid.
+- `GET /network/test_cards` endpoint returns all four presets.
+- **Tests:** `TestAdhocValidation` — 9 tests: Luhn valid/invalid, BIN detection × 4 networks,
+  preset coverage, Amex 15-digit, `test_amex_preset_starts_with_37`, all presets Luhn-valid.
+
+### T0.4 — Demo-mode JIT node: audit step 6 always populated
+- **Problem:** In demo mode the JIT node (step 6 of the audit trail) was empty when
+  `customer_response_body` was `None` or missing keys, causing blank animations.
+- **Fix:** `_execute_scenario_internal` now builds `jit_decision_payload` dict that is
+  **always** populated with `decision`, `rc`, `network`, `jit_method`, `event_type`,
+  `transaction_id`, `amount`, `currency` before any merge with `customer_response_body`.
+  `customer_body` is merged on top if it is a non-empty dict.
+- **Tests:** `TestJitAuditStep` — 3 tests: step 6 populated, contains decision, contains rc.
+
+### T0.1 — Transaction Builder page (`POST /execute_adhoc` + `frontend/pages/10_transaction_builder.py`)
+- **New endpoint `POST /execute_adhoc`:** Builds a scenario on-the-fly from a flexible
+  body (PAN, network, amount, currency, MCC, entry mode, merchant details). Validates PAN
+  (Luhn, length, BIN-network consistency) and returns a full trace including
+  `adhoc_warnings`.
+- **Entry mode aliases:** `chip`, `contactless`, `swipe`, `manual`, `ecom` accepted and
+  translated to ISO numeric codes (`051`, `071`, `011`, `010`, `810`).
+- **New page `frontend/pages/10_transaction_builder.py`:**
+  - Per-network preset sidebar (Visa/MC/Amex/Discover with correct test PANs).
+  - Full form: PAN, network selector, amount, currency, MCC (with labels), merchant name,
+    POS entry mode (with labels), expected RC/decision.
+  - ISO 8583 ↔ JPF contrast panel with per-network colour badge.
+  - Full audit trail expander + demo mode playback.
+  - Test card reference table in expander.
+
+### T1.1 — Clearing & settlement file generation + validation (`backend/settlement.py`)
+- `generate_settlement_file(network_filter, currency_filter)` — pulls CLEARED ledger
+  entries from `marqeta_simulator`, emits header / per-record / trailer structure with
+  `hash_total` (sum of last 6 digits of each transaction_id).
+- `validate_settlement_file(file_dict)` — 9 validation checks (V01–V09):
+  - V01: `header.record_count` vs actual record count
+  - V02: `header.gross_amount` vs sum of `cleared_amount` fields
+  - V03/V04: trailer matches header counts and amounts
+  - V05: `trailer.hash_total` recomputed and compared
+  - V06: per-record `cleared_amount ≤ original_amount`
+  - V07: per-record `state == CLEARED`
+  - V08: per-record currency matches header currency
+  - V09: live ledger cross-reference (amount reconciliation)
+- FastAPI router mounted at `POST /settlement/generate` and `POST /settlement/validate`.
+- **Tests:** `TestSettlementGeneration` — 7 tests: schema, record count, gross amount
+  reconciliation, CLEARED-only filter, validation pass, V01 mismatch, V06 over-clearing.
+
+### T1.2 — DB validation: data-at-rest vs data-in-motion (`GET /validate/db/{transaction_id}`)
+- New endpoint in `backend/main.py` cross-references the SQLite DB record (data-at-rest)
+  against the live marqeta_simulator in-memory ledger (data-in-motion).
+- Drift checks: `AMOUNT_DRIFT`, `CURRENCY_DRIFT`, `NETWORK_DRIFT`.
+- Returns a structured report: `{transaction_id, db_record, ledger_record, drifts, valid}`.
+
+### T1.3 — Interchange / qualification engine (`backend/interchange.py`)
+- Representative rate tables for Visa, Mastercard, Amex, Discover with tier entries
+  (`tier`, `rate_pct`, `fixed_cents`, `applies_when`).
+- `qualify(network, pos_entry_mode, mcc, amount_cents, card_type)` resolves tier from:
+  - Durbin-regulated debit → Regulated Debit (0.05% + $0.21)
+  - E-commerce (810) → Electronic
+  - Manual (010) → Standard (highest rate)
+  - MCC 5812 + contactless → CPS/Restaurant
+  - MCC 5411/5412 + chip/contactless → CPS/Supermarket
+  - chip/contactless/mag → CPS/Retail
+- FastAPI router at `POST /interchange/qualify` and `GET /interchange/rate_table`.
+- **Tests:** `TestInterchangeQualification` — 9 tests: contactless < manual rate,
+  supermarket tier, restaurant tier, Amex standard, fee calculation (MCC 5999 = CPS/Retail
+  @ 1.51% + $0.10 = 161¢ on $100), regulated debit, Discover ecom, rate table coverage.
+
+### T2.1 — jPOS sidecar for byte-authentic ISO 8583 packing (`iso-engine/`)
+- Full Maven project (`iso-engine/pom.xml`): Java 17, jPOS 2.1.9, embedded Jetty 11,
+  Jackson 2.17.1, Logback.
+- `IsoEngineServer.java`: embedded Jetty on port 8200 (via `ISO_ENGINE_PORT` env var).
+  - `GET /health` — liveness probe.
+  - `POST /pack` — accepts `{network, mti, fields}`, packs via `GenericPackager`,
+    returns `{hex, network, mti, length}`.
+  - `POST /unpack` — accepts `{network, hex}`, unpacks, returns `{mti, fields, network}`.
+  - Per-network packager cache (`ConcurrentHashMap`); falls back to `generic.xml` if
+    network-specific spec absent.
+- Packager XML specs: `generic.xml`, `visa.xml`, `mastercard.xml`, `amex.xml`,
+  `discover.xml` (DE 0–128, standard IsoPackager format).
+- Two-stage `Dockerfile`: `maven:3.9-eclipse-temurin-17` build → `eclipse-temurin:17-jre-alpine` runtime.
+- `backend/network/jpos_bridge.py`: Python bridge with graceful degradation — returns
+  `None` (not error) when `ISO_ENGINE_URL` env var is absent; callers fall back to the
+  existing Python packer transparently.
+- Proxy endpoints in `main.py`: `/iso-engine/health`, `/iso-engine/pack`, `/iso-engine/unpack`.
+- **Tests:** `TestJposBridge` — 3 tests: pack/unpack/health return `None`/unavailable when
+  `ISO_ENGINE_URL` is not set.
+
+### T2.3 — CI extension (`tests/test_phase3.py` + `.github/workflows/phase3_ci.yml`)
+- **`tests/test_phase3.py`** — 40 tests across 7 test classes:
+  - `TestNetworkStamping` (6): T0.2 authoritative routing
+  - `TestJitAuditStep` (3): T0.4 JIT payload always populated
+  - `TestAdhocValidation` (9): T0.1/T0.3 PAN validation + presets
+  - `TestSettlementGeneration` (7): T1.1 settlement engine
+  - `TestInterchangeQualification` (9): T1.3 interchange tiers + fees
+  - `TestJposBridge` (3): T2.1 graceful degradation
+  - `TestPanGuard` (2): network field ≠ PAN; no track-2 in request body
+- **`.github/workflows/phase3_ci.yml`** — GitHub Actions CI workflow running all three
+  test suites (`test_vertical_slice.py`, `test_lifecycle.py`, `test_phase3.py`) on every
+  push/PR touching backend, tests, or the iso-engine.
+- **Total across all suites: 78 tests, 0 failures** (Python 3.14, no Docker required).

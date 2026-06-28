@@ -44,9 +44,10 @@ help:
 	@echo "  $(GREEN)make logs$(RESET)          Tail all container logs"
 	@echo ""
 	@echo "$(BOLD)Tests (no Docker):$(RESET)"
-	@echo "  $(GREEN)make test$(RESET)                Run all pytest suites"
-	@echo "  $(GREEN)make test-vertical-slice$(RESET)  Phase 1 ISO/JPF vertical-slice tests"
-	@echo "  $(GREEN)make test-lifecycle$(RESET)        Phase 2 lifecycle ledger tests"
+	@echo "  $(GREEN)make test$(RESET)                Run all pytest suites (78 tests)"
+	@echo "  $(GREEN)make test-vertical-slice$(RESET)  Phase 1 ISO/JPF vertical-slice tests (26)"
+	@echo "  $(GREEN)make test-lifecycle$(RESET)        Phase 2 lifecycle ledger tests (12)"
+	@echo "  $(GREEN)make test-phase3$(RESET)           Phase 3 network/settlement/interchange/jPOS tests (40)"
 	@echo ""
 	@echo "$(BOLD)Utilities:$(RESET)"
 	@echo "  $(GREEN)make pos-simulate$(RESET)  Run the PC/SC agent in software-simulation mode"
@@ -93,9 +94,9 @@ logs:
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 .PHONY: test
-test: test-vertical-slice test-lifecycle
+test: test-vertical-slice test-lifecycle test-phase3
 	@echo ""
-	@echo "$(GREEN)$(BOLD)All test suites passed!$(RESET)"
+	@echo "$(GREEN)$(BOLD)All test suites passed! (78 tests)$(RESET)"
 
 .PHONY: test-vertical-slice
 test-vertical-slice:
@@ -106,6 +107,11 @@ test-vertical-slice:
 test-lifecycle:
 	@echo "$(BOLD)Running lifecycle ledger tests…$(RESET)"
 	$(PYTEST) tests/test_lifecycle.py -v --tb=short
+
+.PHONY: test-phase3
+test-phase3:
+	@echo "$(BOLD)Running Phase 3 tests (network routing, settlement, interchange, jPOS)…$(RESET)"
+	$(PYTEST) tests/test_phase3.py -v --tb=short
 
 
 # ── POS agent ─────────────────────────────────────────────────────────────────
