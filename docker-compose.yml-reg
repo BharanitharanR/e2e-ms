@@ -14,7 +14,6 @@ services:
       - CUSTOMER_JIT_RESET_URL=http://customer_jit:8001/reset
       - DB_PATH=/data/simulator.db
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-opus-4-5}
       - CUSTOMER_JIT_URL=http://customer_jit:8001
       - ACQUIRER_SVC_URL=http://acquirer:8101
       - VISA_SVC_URL=http://visa:8102
@@ -109,9 +108,9 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.100.0
     container_name: otel-collector
-    command: ["--config=/otel/collector-config.yaml"]
+    command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
-      - ./backend/otel:/otel:ro
+      - ./otel/collector-config.yaml:/etc/otel-collector-config.yaml:ro
     ports:
       - "4317:4317"    # OTLP gRPC  — backend → collector
       - "4318:4318"    # OTLP HTTP
@@ -124,12 +123,12 @@ services:
     image: prom/prometheus:v2.51.0
     container_name: prometheus
     command:
-      - "--config.file=/otel/prometheus.yml"
+      - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=7d"
       - "--web.enable-lifecycle"
     volumes:
-      - ./backend/otel:/otel:ro
+      - ./otel/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     ports:
       - "9090:9090"
@@ -145,9 +144,9 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/ollama-analytics.json
     volumes:
+      - ./otel/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./otel/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
-      - ./backend/otel/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./backend/otel/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
       - "3000:3000"
     depends_on:

@@ -1,0 +1,107 @@
+{
+  "uid": "ollama-analytics",
+  "title": "Ollama LLM Analytics — Marqeta E2E",
+  "tags": ["ollama", "llm", "healing", "marqeta"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "type": "stat", "title": "Total Ollama Requests",
+      "datasource": {"uid": "prometheus"},
+      "targets": [{"expr": "sum(marqeta_ollama_requests_total)", "legendFormat": "requests"}],
+      "options": {"reduceOptions": {"calcs": ["sum"]}, "colorMode": "background", "graphMode": "area"}
+    },
+    {
+      "id": 2, "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "type": "stat", "title": "Total Tokens Consumed",
+      "datasource": {"uid": "prometheus"},
+      "targets": [{"expr": "sum(marqeta_ollama_tokens_total_total)", "legendFormat": "tokens"}],
+      "options": {"reduceOptions": {"calcs": ["sum"]}, "colorMode": "background", "graphMode": "area"}
+    },
+    {
+      "id": 3, "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "type": "stat", "title": "Avg Tokens / Second",
+      "datasource": {"uid": "prometheus"},
+      "targets": [{"expr": "avg(rate(marqeta_ollama_tokens_per_second_sum[5m]) / rate(marqeta_ollama_tokens_per_second_count[5m]))", "legendFormat": "tok/s"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value"}
+    },
+    {
+      "id": 4, "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "type": "stat", "title": "Active Ollama Requests",
+      "datasource": {"uid": "prometheus"},
+      "targets": [{"expr": "sum(marqeta_ollama_requests_active)", "legendFormat": "active"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 1}, {"color": "red", "value": 3}]}}
+    },
+    {
+      "id": 5, "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "type": "stat", "title": "Heal — HEALED",
+      "datasource": {"uid": "prometheus"},
+      "targets": [{"expr": "sum(marqeta_heal_outcome_total{status='HEALED'})", "legendFormat": "healed"}],
+      "options": {"reduceOptions": {"calcs": ["sum"]}, "colorMode": "background", "thresholds": {"steps": [{"color": "green", "value": 0}]}}
+    },
+    {
+      "id": 6, "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "type": "stat", "title": "Heal — ESCALATED",
+      "datasource": {"uid": "prometheus"},
+      "targets": [{"expr": "sum(marqeta_heal_outcome_total{status='ESCALATED'})", "legendFormat": "escalated"}],
+      "options": {"reduceOptions": {"calcs": ["sum"]}, "colorMode": "background", "thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "orange", "value": 1}]}}
+    },
+    {
+      "id": 7, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "type": "timeseries", "title": "Ollama Request Latency (ms) — p50 / p95 / p99",
+      "datasource": {"uid": "prometheus"},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum(rate(marqeta_ollama_request_duration_ms_bucket[2m])) by (le, model))", "legendFormat": "p50 {{model}}"},
+        {"expr": "histogram_quantile(0.95, sum(rate(marqeta_ollama_request_duration_ms_bucket[2m])) by (le, model))", "legendFormat": "p95 {{model}}"},
+        {"expr": "histogram_quantile(0.99, sum(rate(marqeta_ollama_request_duration_ms_bucket[2m])) by (le, model))", "legendFormat": "p99 {{model}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ms"}}
+    },
+    {
+      "id": 8, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "type": "timeseries", "title": "Token Consumption Rate (tokens/min)",
+      "datasource": {"uid": "prometheus"},
+      "targets": [
+        {"expr": "sum(rate(marqeta_ollama_tokens_prompt_total_total[1m])) * 60", "legendFormat": "prompt tokens/min"},
+        {"expr": "sum(rate(marqeta_ollama_tokens_completion_total_total[1m])) * 60", "legendFormat": "completion tokens/min"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 9, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "type": "timeseries", "title": "Heal Outcomes Over Time",
+      "datasource": {"uid": "prometheus"},
+      "targets": [
+        {"expr": "sum(rate(marqeta_heal_outcome_total[5m])) by (status) * 300", "legendFormat": "{{status}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 10, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "type": "timeseries", "title": "Heal Root Cause Distribution",
+      "datasource": {"uid": "prometheus"},
+      "targets": [
+        {"expr": "sum(rate(marqeta_heal_outcome_total[5m])) by (root_cause_category) * 300", "legendFormat": "{{root_cause_category}}"}
+      ]
+    },
+    {
+      "id": 11, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "type": "heatmap", "title": "Heal Iterations Heatmap",
+      "datasource": {"uid": "prometheus"},
+      "targets": [
+        {"expr": "sum(rate(marqeta_heal_iterations_bucket[5m])) by (le)", "legendFormat": "{{le}}", "format": "heatmap"}
+      ]
+    },
+    {
+      "id": 12, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+      "type": "table", "title": "Per-Session Token Usage",
+      "datasource": {"uid": "prometheus"},
+      "targets": [
+        {"expr": "sum(marqeta_ollama_tokens_total_total) by (session_id)", "legendFormat": "{{session_id}}", "instant": true, "format": "table"}
+      ],
+      "transformations": [{"id": "organize", "options": {"renameByName": {"session_id": "Session ID", "Value": "Total Tokens"}}}]
+    }
+  ]
+}

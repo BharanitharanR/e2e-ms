@@ -1,0 +1,9 @@
+{
+  "_id": "heal_analyze_agent",
+  "name": "Heal Analyze Agent",
+  "description": "Categorizes a test failure as fixable, escalatable, or a system bug",
+  "prompt_template_id": "heal_analyze_prompt_v1",
+  "guardrail_id": "heal_guardrail_v1",
+  "model": "qwen3:8b",
+  "enabled": true
+}

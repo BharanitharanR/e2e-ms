@@ -1,0 +1,73 @@
+# otel/collector-config.yaml
+#
+# OpenTelemetry Collector pipeline:
+#
+#   Backend (OTLP gRPC :4317)
+#        │
+#        ▼
+#   [receivers]
+#   otlp (grpc + http)
+#        │
+#        ├──► [exporters] prometheusremotewrite → Prometheus :9090
+#        ├──► [exporters] jaeger               → Jaeger :14250
+#        └──► [exporters] logging              → stdout (debug)
+#
+# The Prometheus exporter exposes a scrape endpoint on :8889/metrics so
+# Prometheus can pull it. Jaeger receives traces on gRPC :14250.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+  # Enrich every span and metric with a deployment environment tag
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: "local-docker"
+        action: upsert
+
+  # Cap memory usage of the collector process
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+
+exporters:
+  # Prometheus scrape endpoint — Prometheus pulls from :8889
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: marqeta
+    send_timestamps: true
+    metric_expiration: 3m
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Jaeger trace ingest
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Human-readable debug output — comment out in prod
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters:  [otlp/jaeger, debug]
+
+    metrics:
+      receivers:  [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters:  [prometheus, debug]

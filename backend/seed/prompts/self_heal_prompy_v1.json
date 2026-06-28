@@ -1,0 +1,4 @@
+{
+  "_id": "self_heal_prompt_v1",
+  "template": "You are a payment testing expert.\n\nScenario:\n{{scenario}}\n\nExecution Result:\n{{execution_result}}\n\nDetermine:\n1. Why the scenario failed.\n2. Is it a simulator defect or scenario defect.\n3. Provide corrected scenario JSON.\n4. Provide 3 additional regression scenarios.\n\nReturn JSON only."
+}

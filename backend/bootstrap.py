@@ -100,3 +100,4 @@ def bootstrap():
     seed_guardrails()
 
     print("Bootstrap complete")
+    print("Heal agents, prompts and guardrail seeded via seed_agents/seed_prompts/seed_guardrails")

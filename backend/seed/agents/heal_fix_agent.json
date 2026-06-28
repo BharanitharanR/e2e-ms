@@ -1,0 +1,9 @@
+{
+  "_id": "heal_fix_agent",
+  "name": "Heal Fix Agent",
+  "description": "Proposes the smallest honest fix to a scenario request block",
+  "prompt_template_id": "heal_fix_prompt_v1",
+  "guardrail_id": null,
+  "model": "qwen3:8b",
+  "enabled": true
+}

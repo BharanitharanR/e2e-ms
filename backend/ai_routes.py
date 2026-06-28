@@ -411,6 +411,111 @@ async def suite_insights(request: Request):
     return result
 
 
+<<<<<<< Updated upstream
+=======
+    # Import here to avoid circular import
+    from backend.main import (
+        _execute_scenario_internal
+    )
+
+    body = await request.json()
+
+    description = (
+        body.get("description")
+        or body.get("prompt")
+        or ""
+    ).strip()
+
+    if not description:
+
+        return JSONResponse(
+            {
+                "error": "description is required"
+            },
+            status_code=400
+        )
+
+    try:
+
+        scenario = execute_agent(
+            "scenario_generator",
+            description
+        )
+
+        execution_result = (
+            _execute_scenario_internal(
+                scenario
+            )
+        )
+
+        analysis = analyze_execution(
+            scenario,
+            execution_result
+        )
+
+        return {
+            "scenario": scenario,
+            "execution_result": execution_result,
+            "analysis": analysis
+        }
+
+    except Exception as e:
+
+        logger.exception(
+            "AI test execution failed"
+        )
+
+        return JSONResponse(
+            {
+                "error": str(e)
+            },
+            status_code=500
+        )
+    
+@ai_router.post("/heal")
+async def heal_scenario(request: Request):
+    """
+    Closed-loop: generate fix → re-execute → store → report.
+
+    Request body:
+      { "scenario_id": "contactless_purchase_visa_inr_declined_invalid_pin" }
+    OR pass a full scenario object:
+      { "scenario": { ...full scenario dict... } }
+    """
+    from backend.main import _find_scenario
+    from backend.heal_service import run_heal_loop
+
+    body = await request.json()
+
+    if "scenario" in body:
+        scenario = body["scenario"]
+    else:
+        scenario_id = body.get("scenario_id", "").strip()
+        if not scenario_id:
+            return JSONResponse({"error": "scenario_id or scenario required"}, status_code=400)
+        scenario = _find_scenario(scenario_id)
+        if scenario is None:
+            return JSONResponse({"error": f"scenario '{scenario_id}' not found"}, status_code=404)
+
+    try:
+        result = run_heal_loop(scenario)
+        status_code = 200 if result["status"] in ("PASSED_FIRST_TRY", "HEALED") else 422
+        return JSONResponse(content=result, status_code=status_code)
+    except Exception as e:
+        logger.exception("Heal loop failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@ai_router.get("/heal/runs")
+async def list_heal_runs(scenario_id: str = None, limit: int = 20):
+    """Return recent healing run records from MongoDB."""
+    from backend.heal_service import healing_runs
+    query = {"scenario_id": scenario_id} if scenario_id else {}
+    runs = list(healing_runs.find(query, {"_id": 0}).sort("created_at", -1).limit(limit))
+    return runs
+
+
+>>>>>>> Stashed changes
 @ai_router.post("/coverage_advisor")
 async def coverage_advisor(request: Request):
     """Analyse current RC coverage and identify gaps."""

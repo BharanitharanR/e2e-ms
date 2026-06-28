@@ -1,0 +1,16 @@
+{
+  "_id": "heal_guardrail_v1",
+  "fixable_categories": [
+    "request_malformed",
+    "missing_required_field",
+    "wrong_data_format"
+  ],
+  "escalate_categories": [
+    "feature_not_implemented",
+    "expectation_mismatch",
+    "system_bug",
+    "unknown"
+  ],
+  "min_confidence_for_auto_fix": "medium",
+  "max_iterations": 3
+}
