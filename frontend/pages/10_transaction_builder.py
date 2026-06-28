@@ -326,34 +326,148 @@ if trace and "error" not in trace:
                 with st.expander(f"  Payload (step {step['step']})", expanded=False):
                     st.json(step["payload"])
 
-    # ── Demo mode playback ────────────────────────────────────────────────────
+    # ── Grouped audit trail + per-category playback ───────────────────────────
+    st.markdown("---")
+    st.markdown("### 📊 Transaction Flow (Grouped)")
+
+    audit = trace.get("audit_trail", [])
+
+    # Resolve network for dynamic node labels (fix: was always "visa")
+    _tb_network = (
+        (trace.get("iso_message") or {}).get("network")
+        or trace.get("detected_network")
+        or network_val
+        or "visa"
+    )
+
+    # Step grouping — maps audit step numbers to phase category
+    _STEP_GROUPS = {
+        "1 — Card Origination": {
+            "steps": [1, 2],
+            "icon":  "💳",
+            "desc":  "Cardholder tap / swipe — terminal captures PAN & entry mode",
+        },
+        "2 — Acquirer Outbound": {
+            "steps": [3],
+            "icon":  "🏦",
+            "desc":  "Acquirer builds and forwards ISO 8583 authorization request",
+        },
+        "3 — Network Transit": {
+            "steps": [4, 5],
+            "icon":  "🌐",
+            "desc":  "Network routes message; Marqeta dispatches JIT webhook",
+        },
+        "4 — JIT Authorization": {
+            "steps": [6],
+            "icon":  "✅",
+            "desc":  "Customer JIT webhook makes approve / decline decision",
+        },
+        "5 — Response Path": {
+            "steps": [7, 8, 9],
+            "icon":  "↩️",
+            "desc":  "Network → Acquirer → Terminal: response code propagates back",
+        },
+    }
+
+    step_map = {e.get("step"): e for e in audit}
+
+    speed = st.session_state.get("tb_demo_speed", 1.5)
+
+    for group_label, ginfo in _STEP_GROUPS.items():
+        group_steps = [step_map[s] for s in ginfo["steps"] if s in step_map]
+        if not group_steps:
+            continue
+
+        with st.expander(
+            f"{ginfo['icon']} **{group_label}** — {ginfo['desc']}",
+            expanded=False,
+        ):
+            # Static summary table for this group
+            for entry in group_steps:
+                dir_sym = entry.get("direction", "→")
+                color   = "#1f77b4" if dir_sym == "→" else "#2ca02c"
+                st.markdown(
+                    f'<div style="border-left:3px solid {color};'
+                    f'padding:4px 12px;margin-bottom:4px">'
+                    f'<b>Step {entry["step"]}</b>: {entry.get("actor","")} '
+                    f'<span style="color:{color}">{dir_sym}</span> '
+                    f'<em>{entry.get("label","")}</em>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                if entry.get("payload"):
+                    with st.expander(
+                        f"📦 Payload — {entry.get('actor','')} (step {entry['step']})",
+                        expanded=False,
+                    ):
+                        st.json(entry["payload"])
+
+            # Per-category playback button
+            if st.session_state.demo_mode:
+                play_key = f"play_group_{group_label}"
+                if st.button(
+                    f"▶ Play {ginfo['icon']} {group_label}",
+                    key=play_key,
+                    type="secondary",
+                ):
+                    n_ph = st.empty()
+                    p_ph = st.empty()
+                    for entry in group_steps:
+                        node_idx = _STEP_NODE_MAP.get(entry.get("step", 1), 0)
+                        n_ph.markdown(
+                            render_node_diagram(node_idx, network=_tb_network),
+                            unsafe_allow_html=True,
+                        )
+                        render_playback_step(
+                            entry, entry.get("step"), len(audit),
+                            network=_tb_network,
+                        )
+                        payload = entry.get("payload") or {}
+                        if payload:
+                            lines = json.dumps(payload, indent=2).splitlines()
+                            revealed = ""
+                            per_line_delay = speed / max(len(lines), 1)
+                            for line in lines:
+                                revealed += line + "\n"
+                                p_ph.code(revealed, language="json")
+                                time.sleep(per_line_delay)
+                        else:
+                            time.sleep(speed * 0.3)
+                    n_ph.empty()
+
+    # Full play-all button (demo mode only)
     if st.session_state.demo_mode:
         st.markdown("---")
-        st.markdown("### 🎬 Demo Playback")
-        speed  = st.session_state.get("tb_demo_speed", 1.5)
-        audit  = trace.get("audit_trail", [])
-        n_ph   = st.empty()
-        p_ph   = st.empty()
-        for entry in audit:
-            node_idx = _STEP_NODE_MAP.get(entry.get("step", 1), 0)
-            n_ph.markdown(render_node_diagram(node_idx), unsafe_allow_html=True)
-            render_playback_step(entry, entry.get("step"), len(audit))
-            payload = entry.get("payload") or {}
-            if payload:
-                lines = json.dumps(payload, indent=2).splitlines()
-                revealed = ""
-                per_line_delay = speed / max(len(lines), 1)
-                for line in lines:
-                    revealed += line + "\n"
-                    p_ph.code(revealed, language="json")
-                    time.sleep(per_line_delay)
+        st.markdown("#### 🎬 Full Transaction Replay")
+        if st.button("▶ Play Full Transaction (all steps)", type="primary", key="tb_play_all"):
+            n_ph = st.empty()
+            p_ph = st.empty()
+            for entry in audit:
+                node_idx = _STEP_NODE_MAP.get(entry.get("step", 1), 0)
+                n_ph.markdown(
+                    render_node_diagram(node_idx, network=_tb_network),
+                    unsafe_allow_html=True,
+                )
+                render_playback_step(
+                    entry, entry.get("step"), len(audit),
+                    network=_tb_network,
+                )
+                payload = entry.get("payload") or {}
+                if payload:
+                    lines = json.dumps(payload, indent=2).splitlines()
+                    revealed = ""
+                    per_line_delay = speed / max(len(lines), 1)
+                    for line in lines:
+                        revealed += line + "\n"
+                        p_ph.code(revealed, language="json")
+                        time.sleep(per_line_delay)
+                else:
+                    time.sleep(speed * 0.3)
+            n_ph.empty()
+            if dec == "APPROVED":
+                st.success(f"✅ Transaction Complete — APPROVED (RC: {rc})")
             else:
-                time.sleep(speed * 0.3)
-
-        if dec == "APPROVED":
-            st.success(f"✅ Transaction Complete — APPROVED (RC: {rc})")
-        else:
-            st.error(f"❌ Transaction Complete — {dec} (RC: {rc})")
+                st.error(f"❌ Transaction Complete — {dec} (RC: {rc})")
 
 # ── Test card reference table ─────────────────────────────────────────────────
 st.markdown("---")

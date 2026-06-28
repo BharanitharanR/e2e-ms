@@ -64,9 +64,11 @@ with col_left:
 
     st.markdown("---")
     st.subheader("⚙️ Model & Endpoint Settings")
-    st.caption("Update the model name or base URL for any provider. Click Save after editing.")
+    st.caption(
+        "Edit the **Model** or **Base URL** cells directly, then click **Save**. "
+        "The **Key** column is read-only (manage keys on the right)."
+    )
 
-    # Editable table — one row per provider
     import pandas as pd
     rows = []
     for pname in SUPPORTED:
@@ -77,28 +79,30 @@ with col_left:
             "Base URL": pdata.get("base_url", ""),
             "Key":      pdata.get("key_status", "not detected"),
         })
-    df = pd.DataFrame(rows)
+    df_edit = pd.DataFrame(rows)
 
-    # Colour-code Key column
-    def _style_key(val):
-        if val == "detected":
-            return "color: #2ca02c; font-weight: bold"
-        return "color: #d62728"
-
-    st.dataframe(
-        df.style.applymap(_style_key, subset=["Key"]),
+    edited_df = st.data_editor(
+        df_edit,
         use_container_width=True,
         hide_index=True,
+        disabled=["Provider", "Key"],   # only Model and Base URL are editable
+        column_config={
+            "Key": st.column_config.TextColumn(
+                "Key",
+                help="'detected' = key is stored/available. Manage keys on the right.",
+            ),
+        },
+        key="ai_model_table",
     )
 
     if st.button("💾 Save provider chain & settings", type="primary", key="ai_save_chain"):
-        # Build updated config from current state
+        # Build updated_providers from the *edited* dataframe rows
         updated_providers = {}
-        for pname in SUPPORTED:
-            pdata = _pmap.get(pname, {})
+        for _, row in edited_df.iterrows():
+            pname = row["Provider"]
             updated_providers[pname] = {
-                "model":    pdata.get("model", ""),
-                "base_url": pdata.get("base_url", ""),
+                "model":    row["Model"],
+                "base_url": row["Base URL"],
             }
         result = api_post("/ai/providers/config", {
             "primary":        new_primary,
