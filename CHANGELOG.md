@@ -493,3 +493,125 @@ All notable changes to this project are documented here.
 - **Parked (post-PMF):** Cmd-K palette, audit scrubber, always-on AI dock, mandate diff
   viewer, run permalinks, card-tap animation, React migration, page-count collapse,
   first-run wizard, analytics pagination.
+
+---
+
+## [Unreleased] — Improvements Sprint: Critical Fixes + ISO Mapper Workbench + TCP/IP Channel + jPOS Wiring + AI Backlog
+
+### P0-F1 — Fixed: ISO Mapper crash (`AttributeError: iso_jpf_mapping`)
+- **Root cause:** `frontend/utils/session_state.py` initialized `"iso_jcf_mapping": None`
+  (old JCF terminology retained after the T3.3 sweep); every page that reads
+  `st.session_state.iso_jpf_mapping` raised `AttributeError` on first access.
+- **Fix:** Changed key from `"iso_jcf_mapping"` to `"iso_jpf_mapping"` in `session_state.py`.
+- **Collateral fix:** Column variable names in `04_iso_mapper.py` renamed
+  `col_jpbos` → `col_jpos`, `col_jcf` → `col_jpf`.
+
+### P0-F2 — Fixed: sidebar showed raw lowercase filenames ("app", "01_home", etc.)
+- **Root cause:** `frontend/app.py` relied on Streamlit auto-discovery which uses the
+  filename (minus extension) as the label.
+- **Fix:** Replaced auto-discovery with explicit `st.navigation()` call using 4 grouped,
+  icon-labeled sections:
+  - **🏠 Run:** Home · Transaction Builder · Suite Runner · Certification
+  - **🔭 Inspect:** Scenario Lab · ISO Mapper · Terminal Emulator · Analytics · Enrichment Trace
+  - **⚙️ Configure:** Sandbox Config
+  - **🤖 AI:** AI Copilot · AI Settings
+- Sidebar now shows clean group headings and page titles with emoji icons.
+
+### P0-F3 — Improved: Service Health graceful degradation
+- **Problem:** Health panel showed a single ORCHESTRATOR ✗ UNREACHABLE card with no
+  guidance when the backend was down; operators had no actionable next step.
+- **Fix in `frontend/pages/01_home.py`:**
+  - Each service rendered as its own colour-coded status card (✅ OK / ⚠️ DEGRADED / ❌ UNREACHABLE).
+  - Unreachable cards display the exact URL that was tried.
+  - Collapsible "🛠 Troubleshooting" expander lists startup commands and the Config page
+    link when any service is unreachable.
+  - If the `/health/all` call itself fails, a warning banner with CTA is shown instead.
+
+### P1-T1.1+T1.2+T1.3 — ISO Mapper: network-aware DE workbench + simulate-from-wire
+- **Full rewrite of `frontend/pages/04_iso_mapper.py`** into 4 tabs:
+
+  **🔧 DE Workbench (T1.1 + T1.2):**
+  - Network selector drives the private DE set:
+    Visa (DE44/62/63), Mastercard (DE48/61/63), Amex (DE47/63), Discover (DE62/63).
+  - Pre-filled `_DEFAULT_WIRE_VALUES` dict per network with realistic test values.
+  - 3-column layout: (1) wire value inputs → (2) JPOS canonical packing → (3) JPF mapped output.
+  - Inline EMV validation: DE4 vs 9F02 (amount mismatch) and DE49 vs 5F2A (currency mismatch)
+    flagged as `st.warning()` banners below the translate output.
+  - "Reset wire values" button restores network defaults.
+
+  **🔭 Live Translation (T1.3):**
+  - "▶ Simulate from the Wire" button posts to `POST /execute_adhoc` with current wire values.
+  - Returns full trace (RC, decision, audit trail, ISO/JPF artefacts) inline.
+  - Stores trace to `st.session_state.last_trace` for Demo Mode or Enrichment Trace navigation.
+
+  **📐 Mapping Table:**
+  - Editable `st.data_editor` for the full DE→JPF mapping (session-scoped, reset to defaults).
+
+  **📖 DE Reference:**
+  - Searchable table of ISO 8583 data element names, types, and formats.
+  - Inline "Explain this DE" AI Copilot button for non-ISO experts.
+
+### P2-T2.1+T2.2 — TCP/IP ISO 8583 channel (`backend/network/tcp_channel.py`)
+- **New file `backend/network/tcp_channel.py`:**
+  - MLI (Message Length Indicator) encoder/decoder: 2E, 2I, 4E, 4I modes.
+  - `send_iso_tcp(host, port, packed_hex, mli_mode, tls, ...)` — synchronous wrapper
+    around `asyncio.open_connection()` with configurable connect/read timeouts.
+  - TLS support via `ssl.SSLContext` (optional PEM CA cert injection).
+  - `_build_net_mgmt_hex(de70, stan)` — builds a bare-bones 0800 ISO message with DE70.
+  - `sign_on(...)`, `echo(...)`, `sign_off(...)` — network management helpers for MTI 0800/0810.
+- **New endpoint `POST /iso-engine/send-tcp`** in `backend/main.py`:
+  - Tries jPOS sidecar `POST /send-tcp` first (if `ISO_ENGINE_URL` is set).
+  - Falls back to Python `send_iso_tcp()` transparently.
+  - Returns `{hex_sent, hex_received, mti_response, fields_response, duration_ms, engine}`.
+- **New endpoint `POST /iso-engine/net-mgmt`** in `backend/main.py`:
+  - Accepts `{action: "sign_on"|"echo"|"sign_off", host, port, ...}` body.
+  - Delegates to the appropriate `tcp_channel` function.
+
+### P2-T2.3+T2.4 — Pluggable SUT transport + auth gate (`frontend/pages/06_sandbox_config.py`)
+- **New "🔌 ISO TCP Channel" tab** (5th tab in Sandbox Config):
+  - **Authorization gate:** operator must check "I confirm this is a test/sandbox environment
+    — direct ISO TCP connections are NOT for production" before the panel unlocks.
+    Gate state is stored in `st.session_state.iso_tcp_confirmed` (not persisted across sessions).
+  - **SUT transport type:** radio selector `http` vs `iso_tcp`; both persisted to session state.
+  - **TCP connection parameters:** host, port, MLI mode (2E/2I/4E/4I), TLS toggle,
+    connect + read timeouts.
+  - **Network Management sub-panel:** Sign-On (DE70=001), Echo Test (DE70=301),
+    Sign-Off (DE70=002) buttons with inline response display (SW, fields, latency).
+  - **Manual ISO send:** textarea accepting raw packed hex; posts to `/iso-engine/send-tcp`.
+
+### P3-T3.1 — jPOS sidecar wired into originator live path
+- **Modified `backend/network/originator.py`:**
+  - `_pack_via_jpos` imported at module level from `jpos_bridge` (graceful import fallback
+    to `None` when `jpos_bridge` is unavailable).
+  - `build_0100()`: attempts jPOS pack first; falls back to Python `pack()` if jPOS returns `None`.
+  - `build_linked()`: same jPOS-first pattern for advice/reversal/refund messages.
+  - **Uniqueness fix:** `_rrn()` now uses a thread-safe monotonic counter (`_rrn_counter`,
+    protected by `threading.Lock`) for the last digit instead of `random.randint`. This
+    guarantees distinct RRNs even when `build_0100` and `build_linked` are called in the
+    same UTC second (fixes `test_reversal_has_fresh_stan_and_rrn` flaky failure).
+
+### P3-T3.2 — jPOS health badge on Home + `make iso-engine` Makefile target
+- **`frontend/pages/01_home.py`:** Added "🔧 ISO Engine" section under the AI Provider column:
+  - Calls `GET /iso-engine/health` to probe the jPOS sidecar.
+  - Shows teal `☕ jPOS (Java) vX.X` badge when sidecar is available.
+  - Shows grey `🐍 pyiso8583 (fallback)` badge with `make iso-engine` hint when not.
+- **`Makefile`:** Added `make iso-engine` target:
+  - Detects Maven (`iso-engine/pom.xml`) → runs `mvn package -DskipTests && java -jar ...`.
+  - Detects Gradle (`iso-engine/build.gradle`) → runs `./gradlew run`.
+  - Prints "Python pyiso8583 packer used as fallback" if neither is found.
+  - Added to `make help` output.
+
+### P4 — AI feature backlog (`docs/ai_backlog.md`)
+- Created `docs/ai_backlog.md` documenting the full AI feature landscape:
+  - **Shipped (6 features):** AI Mandate → Scenario generation, "Explain this DE" copilot,
+    AI anomaly detection, AI test-data synthesis, AI provider badge, multi-provider support.
+  - **Parked post-PMF (8 features):** Conversational AI chat dock, audit-trail replay scrubber,
+    canonical-model diff timeline, AI-powered RC root-cause advisor, natural-language history query,
+    AI mandate compliance checker, auto-generated certification narrative, federated learning baseline.
+  - Includes mandate-to-implementation flow diagram, provider priority order (Claude → GPT-4o → Ollama),
+    and security/PII guarantees (PAN never in prompts, keys AES-GCM encrypted).
+
+### Test results
+- **127/127 tests pass** across all suites (`test_lifecycle.py`, `test_phase3.py`,
+  `test_phase5.py`, `test_vertical_slice.py`).
+- No Docker required for any test.

@@ -34,22 +34,58 @@ col_health, col_ai = st.columns([3, 1])
 
 with col_health:
     st.subheader("🟢 Service Health")
+    api_url = get_api_url()
     with st.spinner("Checking services…"):
         health = api_get("/health/all")
     if health and health.get("services"):
         svc_cols = st.columns(len(health["services"]))
         for col, (name, info) in zip(svc_cols, health["services"].items()):
             status = info.get("status", "unknown")
-            icon  = "✅" if status == "ok" else ("⚠️" if status == "degraded" else "❌")
+            if status == "ok":
+                icon = "✅"
+                colour = "#2ecc71"
+            elif status == "degraded":
+                icon = "⚠️"
+                colour = "#f39c12"
+            else:
+                icon = "❌"
+                colour = "#e74c3c"
+            tried_url = info.get("url", "")
+            tooltip = f"URL: {tried_url}" if tried_url else ""
             col.markdown(
-                f'<div class="pc-card">'
+                f'<div class="pc-card" title="{tooltip}">'
                 f'<div class="pc-card-title">{name.replace("_"," ").title()}</div>'
-                f'<div class="pc-card-value" style="font-size:1.1em">{icon} {status.upper()}</div>'
-                f'</div>',
+                f'<div class="pc-card-value" style="font-size:1.05em;color:{colour}">'
+                f'{icon} {status.upper()}</div>'
+                + (
+                    f'<div style="font-size:0.7em;color:#e74c3c;margin-top:4px;word-break:break-all">'
+                    f'UNREACHABLE<br><code>{tried_url}</code></div>'
+                    if status == "unreachable" else ""
+                )
+                + f'</div>',
                 unsafe_allow_html=True,
             )
+        # Show CTA if any service is unreachable
+        unreachable = [n for n, i in health["services"].items() if i.get("status") == "unreachable"]
+        if unreachable:
+            with st.expander("🛠 Troubleshooting — some services unreachable", expanded=False):
+                st.markdown(
+                    f"**Backend URL in use:** `{api_url}`\n\n"
+                    "**Options:**\n"
+                    "- Local (no Docker): `make demo-local`\n"
+                    "- Docker Compose: `docker-compose up --build`\n"
+                    "- Change URL: go to **⚙️ Sandbox Config** → set API URL"
+                )
+                st.caption(f"Unreachable: {', '.join(unreachable)}")
     else:
-        st.warning("⚠️ Cannot reach backend. Start: `make demo-local` or `docker-compose up --build`")
+        st.warning(
+            f"⚠️ Cannot reach backend at `{api_url}`. "
+            "Start: `make demo-local` (no Docker) or `docker-compose up --build`."
+        )
+        st.caption(
+            "Wrong URL? Go to **⚙️ Sandbox Config** and update the API URL, "
+            "or set the `API_URL` environment variable."
+        )
 
 with col_ai:
     st.subheader("🤖 AI Provider")
@@ -63,6 +99,29 @@ with col_ai:
         st.caption(f"Model: `{(pmap.get(primary) or {}).get('model','—')}`")
     else:
         st.caption("Set a key in **🔑 AI Settings** to enable the Copilot.")
+
+    # P3 T3.2 — jPOS vs pyiso8583 health badge
+    st.markdown("---")
+    st.markdown("**🔧 ISO Engine**")
+    iso_health = api_get("/iso-engine/health")
+    if iso_health and iso_health.get("available"):
+        resp_data = iso_health.get("response", {})
+        version   = resp_data.get("version", "")
+        st.markdown(
+            f'<span style="background:#1fb7ac;color:#fff;padding:3px 10px;'
+            f'border-radius:12px;font-size:0.8em;font-weight:600">'
+            f'☕ jPOS (Java){" v" + version if version else ""}</span>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Byte-authentic ISO 8583 packing active.")
+    else:
+        st.markdown(
+            '<span style="background:#7a9cc0;color:#fff;padding:3px 10px;'
+            'border-radius:12px;font-size:0.8em;font-weight:600">'
+            '🐍 pyiso8583 (fallback)</span>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Run `make iso-engine` to start jPOS sidecar.")
 
 st.markdown("---")
 

@@ -2,9 +2,9 @@
 """Paycon e2ePS — End-to-End Payment Simulator.
 
 Multi-page Streamlit application shell.
-The bulk of the UI lives in frontend/pages/ (01_home.py … 12_enrichment_trace.py).
-This file sets global page config, injects the shared Paycon theme, and shows a
-branded landing screen with a live health check.
+Sets global page config, explicit st.navigation() with grouped icon'd sections,
+injects the shared Paycon theme, and shows a branded landing screen with a live
+health check.
 """
 import sys
 import os
@@ -28,36 +28,47 @@ st.set_page_config(
 
 inject_theme()
 
-# ── Brand header ───────────────────────────────────────────────────────────────
-st.markdown("""
-<div class="pc-brand-bar">
-  <span style="font-size:2em">🏦</span>
-  <div>
-    <div class="pc-brand-name">Pay<span>con</span> · e2ePS</div>
-    <div style="font-size:0.76em;color:#7a9cc0">End-to-End Payment Simulator</div>
-  </div>
-  <span class="pc-brand-tag">pilot</span>
-</div>
-""", unsafe_allow_html=True)
+# ── Explicit multi-page navigation (F2 fix) ─────────────────────────────────
+# st.navigation() with titled, icon'd sections prevents Streamlit from showing
+# raw lowercase filenames ("app", "01_home", etc.) in the sidebar.
+_pages_dir = os.path.join(os.path.dirname(__file__), "pages")
 
-st.markdown(
-    "Use the **sidebar** to navigate. "
-    "Start at **🏠 Home** for live health, a one-click demo run, and recent results."
+pg = st.navigation(
+    {
+        "🏠 Run": [
+            st.Page(os.path.join(_pages_dir, "01_home.py"),
+                    title="Home",             icon="🏠"),
+            st.Page(os.path.join(_pages_dir, "10_transaction_builder.py"),
+                    title="Transaction Builder", icon="💳"),
+            st.Page(os.path.join(_pages_dir, "03_suite_runner.py"),
+                    title="Suite Runner",     icon="🧪"),
+            st.Page(os.path.join(_pages_dir, "09_certification.py"),
+                    title="Certification",   icon="🏅"),
+        ],
+        "🔭 Inspect": [
+            st.Page(os.path.join(_pages_dir, "02_scenario_lab.py"),
+                    title="Scenario Lab",    icon="🧬"),
+            st.Page(os.path.join(_pages_dir, "04_iso_mapper.py"),
+                    title="ISO Mapper",      icon="🔄"),
+            st.Page(os.path.join(_pages_dir, "05_terminal_emulator.py"),
+                    title="Terminal Emulator", icon="📱"),
+            st.Page(os.path.join(_pages_dir, "08_analytics.py"),
+                    title="Analytics",       icon="📊"),
+            st.Page(os.path.join(_pages_dir, "12_enrichment_trace.py"),
+                    title="Enrichment Trace", icon="🔍"),
+        ],
+        "⚙️ Configure": [
+            st.Page(os.path.join(_pages_dir, "06_sandbox_config.py"),
+                    title="Sandbox Config",  icon="⚙️"),
+        ],
+        "🤖 AI": [
+            st.Page(os.path.join(_pages_dir, "07_ai_copilot.py"),
+                    title="AI Copilot",      icon="🤖"),
+            st.Page(os.path.join(_pages_dir, "11_ai_settings.py"),
+                    title="AI Settings",     icon="🔑"),
+        ],
+    },
+    position="sidebar",
 )
 
-st.markdown("---")
-
-# ── Live backend status ────────────────────────────────────────────────────────
-api_url = get_api_url()
-st.caption(f"Backend: `{api_url}`")
-
-try:
-    import requests as _req
-    r = _req.get(f"{api_url}/health", timeout=3)
-    if r.status_code == 200:
-        st.success("✅ Backend is reachable — navigate to **🏠 Home** to get started")
-    else:
-        st.warning(f"⚠️ Backend returned HTTP {r.status_code}")
-except Exception as e:
-    st.error(f"❌ Cannot reach backend at `{api_url}` — {e}")
-    st.caption("Start the stack: `make demo-local` (no Docker) or `docker-compose up --build`")
+pg.run()

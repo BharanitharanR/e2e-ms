@@ -17,12 +17,19 @@ DE41, DE42, DE49) plus the network-private DEs defined by the profile.
 from __future__ import annotations
 
 import random
+import threading
 from dataclasses import dataclass, field as dc_field
 from datetime import datetime, timezone
 from typing import Any
 
 from backend.network.router import select_network
 from backend.network.packer import pack, PackResult
+
+# P3 T3.1 — Try jPOS sidecar for byte-authentic packing; fall back to Python.
+try:
+    from backend.network.jpos_bridge import pack_via_jpos as _pack_via_jpos
+except ImportError:
+    _pack_via_jpos = None  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -32,10 +39,20 @@ from backend.network.packer import pack, PackResult
 def _stan() -> str:
     return f"{random.randint(0, 999999):06d}"
 
+# Thread-safe monotonic counter for the last digit of RRN.
+# Guarantees uniqueness even when _rrn() is called multiple times within the
+# same UTC second (e.g. build_0100 + build_linked in rapid succession in tests).
+_rrn_counter: int = 0
+_rrn_lock = threading.Lock()
+
 def _rrn() -> str:
-    # DE37 is exactly 12 alphanumeric chars: yDDDHHMMSS + 1 random digit = 12
+    # DE37 is exactly 12 alphanumeric chars: yDDDHHMMSS + 1 counter digit = 12
+    global _rrn_counter
+    with _rrn_lock:
+        _rrn_counter = (_rrn_counter + 1) % 10
+        counter = _rrn_counter
     ts = datetime.now(timezone.utc).strftime("%y%j%H%M%S")  # 11 chars: 2+3+2+2+2
-    return f"{ts}{random.randint(0, 9):01d}"                # + 1 digit = 12
+    return f"{ts}{counter:01d}"                              # + 1 digit = 12
 
 def _now_mmddhhmmss() -> str:
     return datetime.now(timezone.utc).strftime("%m%d%H%M%S")
@@ -143,7 +160,14 @@ def build_0100(request: dict, network_override: str | None = None) -> Originatio
 
     mti = profile["mti"]["auth_request"]
 
-    pack_result: PackResult = pack(iso_fields, network, mti=mti)
+    # P3 T3.1 — Use jPOS sidecar for byte-authentic packing when available.
+    pack_result: PackResult = None  # type: ignore
+    if _pack_via_jpos is not None:
+        jpos_result = _pack_via_jpos(iso_fields, network, mti=mti)
+        if jpos_result is not None:
+            pack_result = jpos_result  # type: ignore
+    if pack_result is None:
+        pack_result = pack(iso_fields, network, mti=mti)
 
     # Round-trip unpack for audit/mapping
     from backend.network.packer import unpack
@@ -250,7 +274,14 @@ def build_linked(
     mti_key = _LIFECYCLE_MTI_KEY.get(event_type, "auth_request")
     mti = profile["mti"].get(mti_key, profile["mti"]["auth_request"])
 
-    pack_result = pack(iso_fields, network, mti=mti)
+    # P3 T3.1 — Use jPOS sidecar for byte-authentic packing when available.
+    pack_result = None  # type: ignore
+    if _pack_via_jpos is not None:
+        jpos_result = _pack_via_jpos(iso_fields, network, mti=mti)
+        if jpos_result is not None:
+            pack_result = jpos_result  # type: ignore
+    if pack_result is None:
+        pack_result = pack(iso_fields, network, mti=mti)
 
     from backend.network.packer import unpack
     unpack_result = unpack(pack_result.hex, network)

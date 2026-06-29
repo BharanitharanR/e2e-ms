@@ -19,10 +19,11 @@ active_url = get_api_url()
 st.info(f"🌐 Currently connected to: **{active_url}**")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_env, tab_health, tab_jit, tab_reset = st.tabs([
+tab_env, tab_health, tab_jit, tab_tcp, tab_reset = st.tabs([
     "🌍 Environments",
     "💓 Service Health",
     "🔧 JIT Configuration",
+    "🔌 ISO TCP Channel",
     "🔄 Reset / Flush",
 ])
 
@@ -164,7 +165,162 @@ with tab_jit:
             "Is the customer_jit container running?"
         )
 
-# ── Tab 4: Reset / Flush ──────────────────────────────────────────────────────
+# ── Tab 4: ISO TCP Channel (P2 T2.3 + T2.4) ─────────────────────────────────
+with tab_tcp:
+    st.subheader("🔌 ISO 8583 TCP/IP Channel")
+    st.caption(
+        "Connect directly to a host's ISO 8583 socket (NACChannel, ASCIIChannel, or length-prefixed). "
+        "**Test/sandbox endpoints only.** Never point at a production ISO host."
+    )
+
+    # T2.4 — Guardrail: explicit authorisation confirmation gate
+    st.warning(
+        "⚠️ **IMPORTANT — Authorisation Required**\n\n"
+        "ISO 8583 TCP connections send live financial messages. "
+        "Only connect to **test or sandbox** endpoints. "
+        "Ensure you are authorised by your organisation to use this interface."
+    )
+    authorized = st.checkbox(
+        "I confirm this is a **test/sandbox** endpoint and I am authorised to use this interface.",
+        key="tcp_authorized",
+    )
+
+    if not authorized:
+        st.info("Check the box above to unlock the ISO TCP panel.")
+        st.stop()
+
+    st.markdown("---")
+
+    # T2.3 — SUT configuration: http vs iso_tcp
+    st.subheader("SUT Transport Type")
+    st.caption(
+        "Choose whether this SUT communicates over HTTP (standard JIT mock) "
+        "or a raw ISO 8583 TCP socket."
+    )
+    sut_type = st.radio(
+        "Transport",
+        options=["http", "iso_tcp"],
+        format_func=lambda t: "🌐 HTTP / JIT Webhook (standard)" if t == "http" else "🔌 ISO 8583 TCP Socket",
+        horizontal=True,
+        key="tcp_sut_type",
+    )
+    if sut_type == "http":
+        st.info("Standard HTTP mode is active. Use the Environments tab to configure the JIT URL.")
+    else:
+        st.success("ISO TCP mode selected. Configure the socket parameters below.")
+
+    st.markdown("---")
+
+    # ISO TCP connection parameters
+    st.subheader("TCP Connection Parameters")
+    tcp_col1, tcp_col2, tcp_col3 = st.columns(3)
+    tcp_host = tcp_col1.text_input("Host", value="localhost", key="tcp_host",
+                                    help="ISO socket hostname or IP")
+    tcp_port = tcp_col2.number_input("Port", min_value=1, max_value=65535, value=5000, key="tcp_port")
+    tcp_mli  = tcp_col3.selectbox(
+        "MLI Mode",
+        options=["2E", "2I", "4E", "4I"],
+        help="Message Length Indicator framing: 2E=2-byte exclusive (most common), "
+             "2I=2-byte inclusive, 4E/4I=4-byte variants",
+        key="tcp_mli",
+    )
+    tcp_col4, tcp_col5 = st.columns(2)
+    tcp_tls     = tcp_col4.checkbox("TLS / Encrypted", value=False, key="tcp_tls")
+    tcp_timeout = tcp_col5.number_input("Timeout (s)", min_value=1, max_value=120, value=15, key="tcp_timeout")
+
+    tcp_channel = st.selectbox(
+        "Channel Type (jPOS hint)",
+        options=["NACChannel", "ASCIIChannel", "XMLChannel", "PADChannel"],
+        help="Channel type used when routing via the jPOS sidecar. "
+             "Python fallback uses MLI mode regardless of this setting.",
+        key="tcp_channel",
+    )
+
+    st.markdown("---")
+
+    # T2.2 — Network Management sub-panel
+    st.subheader("🔧 Network Management (ISO 0800)")
+    st.caption(
+        "Sign-on before sending 0100 auth requests. Echo tests the connection. "
+        "Sign-off when done."
+    )
+    nm_col1, nm_col2, nm_col3 = st.columns(3)
+    if nm_col1.button("📶 Sign-On (DE70=001)", key="tcp_sign_on", use_container_width=True):
+        with st.spinner("Sending 0800 sign-on…"):
+            result = api_post("/iso-engine/net-mgmt", {
+                "action": "sign_on", "host": tcp_host, "port": tcp_port,
+                "mli_mode": tcp_mli, "tls": tcp_tls, "timeout": tcp_timeout,
+            })
+        if result and result.get("success"):
+            st.success(f"✅ Sign-on OK — MTI: {result.get('response_mti')} | {result.get('elapsed_ms',0):.0f}ms")
+        else:
+            st.error(f"❌ Sign-on failed: {(result or {}).get('error','no response')}")
+
+    if nm_col2.button("🏓 Echo Test (DE70=301)", key="tcp_echo", use_container_width=True):
+        with st.spinner("Sending 0800 echo…"):
+            result = api_post("/iso-engine/net-mgmt", {
+                "action": "echo", "host": tcp_host, "port": tcp_port,
+                "mli_mode": tcp_mli, "tls": tcp_tls, "timeout": tcp_timeout,
+            })
+        if result and result.get("success"):
+            st.success(f"✅ Echo OK — MTI: {result.get('response_mti')} | {result.get('elapsed_ms',0):.0f}ms")
+        else:
+            st.error(f"❌ Echo failed: {(result or {}).get('error','no response')}")
+
+    if nm_col3.button("🔴 Sign-Off (DE70=002)", key="tcp_sign_off", use_container_width=True):
+        with st.spinner("Sending 0800 sign-off…"):
+            result = api_post("/iso-engine/net-mgmt", {
+                "action": "sign_off", "host": tcp_host, "port": tcp_port,
+                "mli_mode": tcp_mli, "tls": tcp_tls, "timeout": tcp_timeout,
+            })
+        if result and result.get("success"):
+            st.success(f"✅ Sign-off OK — MTI: {result.get('response_mti')} | {result.get('elapsed_ms',0):.0f}ms")
+        else:
+            st.error(f"❌ Sign-off failed: {(result or {}).get('error','no response')}")
+
+    st.markdown("---")
+
+    # Manual send
+    st.subheader("📤 Manual ISO Message Send")
+    st.caption("Paste a packed ISO 8583 hex string and send it directly over the TCP channel.")
+    manual_hex = st.text_area(
+        "Packed ISO 8583 (hex)",
+        placeholder="30313030... (hex-encoded ISO message body)",
+        height=80,
+        key="tcp_manual_hex",
+    )
+    if st.button("▶ Send via TCP", type="primary", key="tcp_send_manual"):
+        if not manual_hex.strip():
+            st.warning("Paste a hex-encoded ISO message above first.")
+        else:
+            with st.spinner("Sending over TCP…"):
+                result = api_post("/iso-engine/send-tcp", {
+                    "packed_hex":   manual_hex.strip().replace(" ", ""),
+                    "host":         tcp_host,
+                    "port":         tcp_port,
+                    "mli_mode":     tcp_mli,
+                    "tls":          tcp_tls,
+                    "timeout":      tcp_timeout,
+                    "channel_type": tcp_channel,
+                })
+            if result and not result.get("error"):
+                transport = result.get("transport", "unknown")
+                elapsed   = result.get("elapsed_ms", 0)
+                resp_hex  = result.get("response_hex", "")
+                st.success(f"✅ Response received via **{transport}** in {elapsed:.0f}ms")
+                st.code(resp_hex if resp_hex else "(empty response)", language=None)
+            else:
+                st.error(f"❌ Send failed: {(result or {}).get('error','no response')}")
+
+    st.markdown("---")
+    st.caption(
+        "**Security note:** Credentials for sign-on (PIN, MAC keys) are never logged. "
+        "Use the `CUSTOMER_JIT_SECRET` environment variable for signing keys in production integrations. "
+        "This panel is intended for test/sandbox endpoints only."
+    )
+
+
+# ── Tab 5: Reset / Flush ──────────────────────────────────────────────────────
 with tab_reset:
     st.subheader("Reset & Flush")
     st.caption(

@@ -490,6 +490,136 @@ async def iso_engine_unpack(request: Request):
     return {"fields": result.fields, "mti": result.mti, "network": result.network}
 
 
+@app.post("/iso-engine/send-tcp")
+async def iso_engine_send_tcp(request: Request):
+    """Send a packed ISO 8583 message over TCP/IP (P2 T2.1).
+
+    Tries the jPOS sidecar's /send-tcp endpoint first; if unavailable (no
+    ISO_ENGINE_URL) falls back to the pure-Python asyncio TCP channel.
+
+    Body fields:
+        packed_hex   str  — hex of the packed ISO 8583 message
+        host         str  — remote ISO host (REQUIRED for Python fallback)
+        port         int  — remote ISO port (REQUIRED for Python fallback)
+        mli_mode     str  — "2E" | "2I" | "4E" | "4I"  (default "2E")
+        tls          bool — wrap in TLS (default false)
+        ca_cert_pem  str  — path to CA cert PEM (optional, for TLS)
+        timeout      float — connect + read timeout in seconds (default 15)
+        channel_type str  — "NACChannel" | "ASCIIChannel" | ... (jPOS hint)
+        network      str  — visa | mastercard | amex | discover (for context)
+
+    Returns:
+        response_hex, elapsed_ms, and optionally error.
+    """
+    try:
+        from backend.network.jpos_bridge import ISO_ENGINE_URL
+        import requests as _sync_req
+        _jpos_available = bool(ISO_ENGINE_URL)
+    except ImportError:
+        _jpos_available = False
+        ISO_ENGINE_URL = None
+
+    body = await request.json()
+    packed_hex   = body.get("packed_hex", "")
+    host         = body.get("host", "")
+    port         = int(body.get("port", 0))
+    mli_mode     = body.get("mli_mode", "2E")
+    tls          = bool(body.get("tls", False))
+    ca_cert_pem  = body.get("ca_cert_pem")
+    timeout      = float(body.get("timeout", 15))
+    channel_type = body.get("channel_type", "NACChannel")
+    network      = body.get("network", "visa")
+
+    if not packed_hex:
+        return {"error": "packed_hex is required"}
+
+    # ── Try jPOS sidecar first ────────────────────────────────────────────────
+    if _jpos_available and ISO_ENGINE_URL:
+        try:
+            jpos_resp = _sync_req.post(
+                f"{ISO_ENGINE_URL}/send-tcp",
+                json={
+                    "packed_hex":   packed_hex,
+                    "host":         host,
+                    "port":         port,
+                    "mli_mode":     mli_mode,
+                    "tls":          tls,
+                    "channel_type": channel_type,
+                    "network":      network,
+                    "timeout":      timeout,
+                },
+                timeout=timeout + 5,
+            )
+            if jpos_resp.status_code == 200:
+                data = jpos_resp.json()
+                data["transport"] = "jpos"
+                return data
+        except Exception as exc:
+            log.warning("jPOS /send-tcp unavailable, falling back to Python: %s", exc)
+
+    # ── Python asyncio fallback ───────────────────────────────────────────────
+    if not host or not port:
+        return {
+            "error": "host and port are required when jPOS sidecar is unavailable",
+            "transport": "python_fallback",
+        }
+
+    try:
+        from backend.network.tcp_channel import send_iso_tcp
+    except ImportError:
+        from network.tcp_channel import send_iso_tcp  # type: ignore
+
+    result = send_iso_tcp(
+        host=host, port=port, packed_hex=packed_hex,
+        mli_mode=mli_mode, tls=tls, ca_cert_pem=ca_cert_pem,
+        connect_timeout=min(timeout, 30),
+        read_timeout=min(timeout, 30),
+    )
+    result["transport"] = "python_fallback"
+    result["network"] = network
+    return result
+
+
+@app.post("/iso-engine/net-mgmt")
+async def iso_engine_net_mgmt(request: Request):
+    """Send a network management message (0800) — sign-on / echo / sign-off (P2 T2.2).
+
+    Body fields:
+        action       str  — "sign_on" | "echo" | "sign_off"  (maps to DE70)
+        host         str  — remote ISO host
+        port         int  — remote ISO port
+        mli_mode     str  — "2E" | "2I" | "4E" | "4I"  (default "2E")
+        tls          bool — TLS wrap  (default false)
+        timeout      float — timeout in seconds (default 10)
+        stan         str  — 6-digit STAN override (default "000001")
+    """
+    body = await request.json()
+    action   = body.get("action", "echo").lower()
+    host     = body.get("host", "")
+    port     = int(body.get("port", 0))
+    mli_mode = body.get("mli_mode", "2E")
+    tls      = bool(body.get("tls", False))
+    timeout  = float(body.get("timeout", 10))
+    stan     = str(body.get("stan", "000001")).zfill(6)
+
+    if not host or not port:
+        return {"error": "host and port are required"}
+
+    try:
+        from backend.network.tcp_channel import sign_on, echo, sign_off
+    except ImportError:
+        from network.tcp_channel import sign_on, echo, sign_off  # type: ignore
+
+    fn = {"sign_on": sign_on, "echo": echo, "sign_off": sign_off}.get(action)
+    if fn is None:
+        return {"error": f"Unknown action '{action}'. Valid: sign_on, echo, sign_off"}
+
+    result = fn(host=host, port=port, stan=stan, mli_mode=mli_mode,
+                tls=tls, timeout=timeout)
+    result["action"] = action
+    return result
+
+
 @app.get("/health/all")
 async def health_all():
     """Check health of every service in the stack and return aggregated status."""

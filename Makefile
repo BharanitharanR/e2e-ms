@@ -54,6 +54,7 @@ help:
 	@echo "  $(GREEN)make test-phase5$(RESET)           Phase 5 local-demo/AI-config/enrichment/mandate tests (49)"
 	@echo ""
 	@echo "$(BOLD)Utilities:$(RESET)"
+	@echo "  $(GREEN)make iso-engine$(RESET)    Start jPOS ISO sidecar (port 8200; Java 11+ required)"
 	@echo "  $(GREEN)make pos-simulate$(RESET)  Run the PC/SC agent in software-simulation mode"
 	@echo "  $(GREEN)make lint$(RESET)          Run ruff linter over backend + tests"
 	@echo "  $(GREEN)make clean$(RESET)         Remove __pycache__ and .pytest_cache"
@@ -128,6 +129,23 @@ test-phase3:
 test-phase5:
 	@echo "$(BOLD)Running Phase 5 tests (local demo, AI config, enrichment trace, mandate)…$(RESET)"
 	$(PYTEST) tests/test_phase5.py -v --tb=short
+
+
+# ── ISO Engine (jPOS sidecar) ─────────────────────────────────────────────────
+.PHONY: iso-engine
+iso-engine:
+	@echo "$(BOLD)Starting jPOS ISO engine sidecar (port 8200)…$(RESET)"
+	@echo "$(BLUE)Requires Java 11+ and iso-engine/ directory with jPOS Q2 config.$(RESET)"
+	@if [ -d iso-engine ] && [ -f iso-engine/pom.xml ]; then \
+		cd iso-engine && mvn -q package -DskipTests && \
+		java -jar target/iso-engine-*.jar; \
+	elif [ -d iso-engine ] && [ -f iso-engine/build.gradle ]; then \
+		cd iso-engine && ./gradlew -q run; \
+	else \
+		echo "$(BOLD)iso-engine/ not found or missing pom.xml / build.gradle.$(RESET)"; \
+		echo "$(BLUE)Without the jPOS sidecar, the Python pyiso8583 packer is used as fallback.$(RESET)"; \
+		echo "$(BLUE)Set ISO_ENGINE_URL=http://localhost:8200 when the sidecar is running.$(RESET)"; \
+	fi
 
 
 # ── POS agent ─────────────────────────────────────────────────────────────────

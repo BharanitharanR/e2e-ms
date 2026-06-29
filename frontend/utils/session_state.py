@@ -13,7 +13,7 @@ def init_session_state():
     defaults = {
         # ── Core simulator keys (preserved from original app.py) ────────────
         "iso_mode":           False,
-        "iso_jcf_mapping":    None,
+        "iso_jpf_mapping":    None,
         "suite_result":       None,
         "apdu_log":           [],
         "card_state":         None,
