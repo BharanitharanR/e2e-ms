@@ -2,7 +2,7 @@
 
 set -e
 
-MODEL_NAME=${OLLAMA_MODEL:-qwen3:8b}
+MODEL_NAME=${OLLAMA_MODEL:-qwen3:1.7B}
 
 echo "Starting Ollama..."
 

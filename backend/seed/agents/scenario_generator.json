@@ -4,6 +4,6 @@
   "description": "Generate payment simulator scenarios",
   "prompt_template_id": "scenario_prompt_v1",
   "guardrail_id": "scenario_guardrail_v1",
-  "model": "qwen3:8b",
+  "model": "qwen3:1.7b",
   "enabled": true
 }

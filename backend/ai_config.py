@@ -58,7 +58,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
             "base_url": "http://localhost:8080/v1",
         },
         "ollama": {
-            "model":    "qwen3:8b",
+            "model":    "qwen3:1.7b",
             "base_url": "http://localhost:11434",
         },
     },
