@@ -20,11 +20,12 @@ import json
 import logging
 import time
 
+from groq import Groq
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from backend.ai_provider import generate_with_fallback
-
+from backend.ai_config import get_api_key
 logger = logging.getLogger(__name__)
 
 ai_router = APIRouter(prefix="/ai", tags=["AI Copilot"])
@@ -296,7 +297,90 @@ async def delete_provider_key(provider: str):
     except Exception as exc:
         logger.error("delete_api_key failed: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
+    
+def _call_groq(system: str, user_msg: str, max_tokens: int = 1200):
 
+    api_key = get_api_key("groq")
+
+    if not api_key:
+        raise RuntimeError(
+            "Groq API key has not been configured. Please save it from AI Settings."
+        )
+
+    client = Groq(
+        api_key=os.environ["GROQ_API_KEY"]
+    )
+
+    response = client.chat.completions.create(
+
+        model=os.getenv(
+            "GROQ_MODEL",
+            "llama-3.3-70b-versatile",
+        ),
+
+        temperature=0.2,
+
+        messages=[
+
+            {
+                "role": "system",
+                "content": system,
+            },
+
+            {
+                "role": "user",
+                "content": user_msg,
+            },
+
+        ],
+    )
+
+    raw = response.choices[0].message.content.strip()
+
+    #
+    # Remove markdown fences if present
+    #
+
+    if raw.startswith("```"):
+
+        raw = raw.replace("```json", "")
+        raw = raw.replace("```", "")
+        raw = raw.strip()
+
+    return json.loads(raw)
+
+def _groq_scenario_fn(prompt):
+
+    result = _call_groq(
+        _SCENARIO_SYSTEM,
+        prompt,
+        max_tokens=1200,
+    )
+
+    if "scenario" in result:
+
+        scenario = result["scenario"]
+
+        scenario["_meta"] = {
+
+            "explanation": result.get("explanation"),
+
+            "suggested_rc": result.get("suggested_rc"),
+
+            "jit_behavior": result.get("jit_behavior"),
+        }
+
+    else:
+
+        scenario = result
+
+    if not scenario.get("id"):
+
+        import time
+
+        scenario["id"] = f"gen_{int(time.time())}"
+
+    return scenario
 
 # ── Provider functions (T0.4 — normalize to bare scenario dict) ───────────────
 
@@ -353,7 +437,7 @@ async def generate_scenario(request: Request):
         return JSONResponse({"error": "prompt is required"}, status_code=400)
 
     try:
-        scenario = generate_with_fallback(user_input, _claude_scenario_fn)
+        scenario = generate_with_fallback(user_input, _groq_scenario_fn)
 
         # Persist via mongo_repository so the scenario is immediately runnable
         try:
@@ -392,7 +476,7 @@ async def run_test(request: Request):
 
     try:
         # Generate bare scenario dict
-        scenario = generate_with_fallback(description, _claude_scenario_fn)
+        scenario = generate_with_fallback(description, _groq_scenario_fn)
 
         # Strip internal _meta key before passing to the execution engine
         bare_scenario = {k: v for k, v in scenario.items() if k != "_meta"}

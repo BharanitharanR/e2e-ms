@@ -92,9 +92,17 @@ try:
     except ImportError:
         from ai_routes import ai_router
     _AI_AVAILABLE = True
-except Exception:  # pragma: no cover
-    ai_router = None
-    _AI_AVAILABLE = False
+except Exception as e:
+    import traceback
+
+    traceback.print_exc()
+
+    print("=" * 80)
+    print("FAILED TO IMPORT AI ROUTER")
+    print(e)
+    print("=" * 80)
+
+    raise
 
 # Enrichment trace builder (T1.1 — Phase 5).
 try:
