@@ -39,8 +39,10 @@ def _resolve_url(docker_name: str, docker_port: int, path: str = "") -> str:
         return f"http://{docker_name}:{docker_port}{path}"
     return f"http://127.0.0.1:{docker_port}{path}"
 
-CUSTOMER_JIT_URL = os.getenv("CUSTOMER_JIT_URL", _resolve_url("customer_jit", 8001, "/jit/authorize"))
-
+CUSTOMER_JIT_URL = os.getenv(
+    "CUSTOMER_JIT_URL",
+    "http://127.0.0.1:8000/customer_jit/jit/authorize",
+)
 # --------------------------------------------------------------------------- #
 # Issuer ledger (T1.1 / T1.2)
 # --------------------------------------------------------------------------- #

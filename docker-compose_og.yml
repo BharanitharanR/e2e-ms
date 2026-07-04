@@ -1,0 +1,102 @@
+# e2e-marqeta-simulator/docker-compose.yml
+# (the obsolete top-level `version:` key is intentionally omitted)
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ACQUIRER_URL=http://acquirer:8101/authorize
+      - CUSTOMER_JIT_RESET_URL=http://customer_jit:8001/reset
+      - DB_PATH=/data/simulator.db
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-opus-4-5}
+      - CUSTOMER_JIT_URL=http://customer_jit:8001
+      - ACQUIRER_SVC_URL=http://acquirer:8101
+      - VISA_SVC_URL=http://visa:8102
+      - MARQETA_SIM_URL=http://marqeta_simulator:8103
+    volumes:
+      - simulator_data:/data
+    depends_on:
+      - acquirer
+      - customer_jit
+
+  acquirer:
+    build:
+      context: .
+      dockerfile: Dockerfile.acquirer
+    ports:
+      - "8101:8101"
+    environment:
+      - VISA_URL=http://visa:8102/network/authorize
+    depends_on:
+      - visa
+
+  visa:
+    build:
+      context: .
+      dockerfile: Dockerfile.visa
+    ports:
+      - "8102:8102"
+    environment:
+      - MARQETA_URL=http://marqeta_simulator:8103/issuer/authorize
+    depends_on:
+      - marqeta_simulator
+
+  marqeta_simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.marqeta_simulator
+    ports:
+      - "8103:8103"
+    environment:
+      - CUSTOMER_JIT_URL=http://customer_jit:8001/jit/authorize
+    depends_on:
+      - customer_jit
+
+  customer_jit:
+    build:
+      context: .
+      dockerfile: Dockerfile.customer_jit
+    ports:
+      - "8001:8001"
+    environment:
+      - BLOCKED_MCCS=${BLOCKED_MCCS:-6011,4829}
+      - DAILY_LIMIT_CENTS=${DAILY_LIMIT_CENTS:-0}
+      - VELOCITY_MAX_TXN=${VELOCITY_MAX_TXN:-0}
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://backend:8000
+    depends_on:
+      - backend
+
+  ollama:
+    build:
+      context: .
+      dockerfile: Dockerfile.ollama
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    environment:
+      OLLAMA_MODEL: qwen3:8b
+    volumes:
+      - ollama_data:/root/.ollama
+  mongodb:
+    image: mongo:7
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db    
+volumes:
+  simulator_data:
+  mongo_data:
+  ollama_data:

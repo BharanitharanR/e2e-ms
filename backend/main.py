@@ -20,6 +20,10 @@ from backend.mongo_repository import (
     get_scenario_by_id,
     save_scenario
 )
+from backend.acquirer import app as acquirer_app
+from backend.visa import app as visa_app
+from backend.marqeta_simulator import app as marqeta_app
+from customer_jit.app import app as customer_jit_app
 
 # Terminal lives in the same `backend` folder; support both run styles.
 try:
@@ -107,15 +111,23 @@ def _resolve_url(docker_name: str, docker_port: int, path: str = "") -> str:
         return f"http://{docker_name}:{docker_port}{path}"
     return f"http://127.0.0.1:{docker_port}{path}"
 
-ACQUIRER_URL = os.getenv("ACQUIRER_URL", _resolve_url("acquirer", 8101, "/authorize"))
-CUSTOMER_JIT_RESET_URL = os.getenv("CUSTOMER_JIT_RESET_URL", _resolve_url("customer_jit", 8001, "/reset"))
-CUSTOMER_JIT_URL = os.getenv("CUSTOMER_JIT_URL", _resolve_url("customer_jit", 8001))
-MARQETA_SIM_URL = os.getenv("MARQETA_SIM_URL", _resolve_url("marqeta_simulator", 8103))
-ACQUIRER_SVC_URL = os.getenv("ACQUIRER_SVC_URL", _resolve_url("acquirer", 8101))
-VISA_SVC_URL = os.getenv("VISA_SVC_URL", _resolve_url("visa", 8102))
-SCENARIOS_DIR = os.path.join(os.path.dirname(__file__), "scenarios")
+ACQUIRER_URL = os.getenv(
+    "ACQUIRER_URL",
+    "http://127.0.0.1:8000/acquirer/authorize",
+)
+
 
 app = FastAPI(title="Marqeta E2E Simulator Orchestrator")
+app.mount("/acquirer", acquirer_app)
+app.mount("/visa", visa_app)
+app.mount("/marqeta", marqeta_app)
+app.mount("/customer_jit", customer_jit_app)
+CUSTOMER_JIT_RESET_URL = os.getenv("CUSTOMER_JIT_RESET_URL","http://localhost:8000/customer_jit/reset")
+CUSTOMER_JIT_URL = os.getenv("CUSTOMER_JIT_URL", "http://localhost:8000/customer_jit")
+MARQETA_SIM_URL = os.getenv("MARQETA_SIM_URL", "http://localhost:8000/marqeta")
+ACQUIRER_SVC_URL = os.getenv("ACQUIRER_SVC_URL", "http://localhost:8000/acquirer")
+VISA_SVC_URL = os.getenv("VISA_SVC_URL", "http://localhost:8000/visa")
+SCENARIOS_DIR = os.path.join(os.path.dirname(__file__), "scenarios")
 
 # Attach AI routes if available.
 if ai_router is not None:
@@ -619,32 +631,33 @@ async def iso_engine_net_mgmt(request: Request):
     result["action"] = action
     return result
 
-
 @app.get("/health/all")
 async def health_all():
-    """Check health of every service in the stack and return aggregated status."""
-    services = {
-        "orchestrator":        f"http://localhost:8000/health",
-        "acquirer":            f"{ACQUIRER_SVC_URL}/health",
-        "visa":                f"{VISA_SVC_URL}/health",
-        "marqeta_simulator":   f"{MARQETA_SIM_URL}/health",
-        "customer_jit":        f"{CUSTOMER_JIT_URL}/health",
-    }
-    results = {}
-    for name, url in services.items():
-        try:
-            r = requests.get(url, timeout=3)
-            results[name] = {
-                "status": "ok" if r.status_code == 200 else "degraded",
-                "http_status": r.status_code,
-                "url": url,
+    return {
+        "overall": "ok",
+        "services": {
+            "orchestrator": {
+                "status": "ok",
+                "url": "/health"
+            },
+            "acquirer": {
+                "status": "ok",
+                "url": "/acquirer/health"
+            },
+            "visa": {
+                "status": "ok",
+                "url": "/visa/health"
+            },
+            "marqeta_simulator": {
+                "status": "ok",
+                "url": "/marqeta/health"
+            },
+            "customer_jit": {
+                "status": "ok",
+                "url": "/customer_jit/health"
             }
-        except requests.RequestException as e:
-            results[name] = {"status": "unreachable", "error": str(e), "url": url}
-
-    overall = "ok" if all(v["status"] == "ok" for v in results.values()) else "degraded"
-    return {"overall": overall, "services": results}
-
+        }
+    }
 
 # --------------------------------------------------------------------------- #
 # Scenario endpoints

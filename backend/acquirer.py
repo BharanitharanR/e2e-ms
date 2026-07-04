@@ -19,7 +19,10 @@ def _resolve_url(docker_name: str, docker_port: int, path: str = "") -> str:
         return f"http://{docker_name}:{docker_port}{path}"
     return f"http://127.0.0.1:{docker_port}{path}"
 
-VISA_URL = os.getenv("VISA_URL", _resolve_url("visa", 8102, "/network/authorize"))
+VISA_URL = os.getenv(
+    "VISA_URL",
+    "http://127.0.0.1:8000/visa/network/authorize",
+)
 
 
 def _post_with_retry(url, body, attempts=3, timeout=10):
@@ -36,7 +39,6 @@ def _post_with_retry(url, body, attempts=3, timeout=10):
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "acquirer"}
-
 
 @app.post("/authorize")
 async def authorize(request: Request):
