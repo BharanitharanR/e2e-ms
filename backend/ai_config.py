@@ -178,8 +178,46 @@ def set_api_key(provider: str, key: str) -> None:
     _write_secrets_raw(data)
     logger.info("API key updated for provider: %s", provider)
 
-
 def get_api_key(provider: str) -> str | None:
+    """
+    Return the API key for a provider.
+
+    Priority:
+        1. In-app AI Settings (encrypted secrets)
+        2. Environment variable
+        3. None
+    """
+
+    #
+    # 1. Saved from the AI Settings UI
+    #
+    data = _read_secrets_raw()
+
+    key = data.get("keys", {}).get(provider)
+
+    if key:
+        return key
+
+    #
+    # 2. Environment variable
+    #
+    ENV_MAP = {
+        "claude": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "azure": "AZURE_OPENAI_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "vllm": "VLLM_API_KEY",
+        "ollama": None,
+    }
+
+    env_name = ENV_MAP.get(provider)
+
+    if env_name:
+        return os.getenv(env_name)
+
+    return None
+
+def get_api_key_claude(provider: str) -> str | None:
     """Return the stored API key for a provider.
 
     Priority: in-app secrets → environment variable → None.

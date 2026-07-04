@@ -304,14 +304,14 @@ def _call_groq(system: str, user_msg: str, max_tokens: int = 1200):
 
     if not api_key:
         api_key = os.getenv("GROQ_API_KEY")
-        
+
     if not api_key:
         raise RuntimeError(
             "Groq API key has not been configured. Please save it from AI Settings."
         )
 
     client = Groq(
-        api_key=os.environ["GROQ_API_KEY"]
+        api_key=api_key
     )
 
     response = client.chat.completions.create(

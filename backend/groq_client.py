@@ -1,13 +1,31 @@
 import os
+
 from groq import Groq
+
+from backend.ai_config import get_api_key
 
 
 class GroqClient:
 
     def __init__(self):
-        self.client = Groq(
-            api_key=os.getenv("GROQ_API_KEY")
-        )
+
+        #
+        # Priority:
+        #   1. Saved key from AI Settings
+        #   2. Environment variable
+        #
+
+        api_key = get_api_key("groq")
+
+        if not api_key:
+            api_key = os.getenv("GROQ_API_KEY")
+
+        if not api_key:
+            raise RuntimeError(
+                "Groq API key not configured. Configure it in AI Settings or set GROQ_API_KEY."
+            )
+
+        self.client = Groq(api_key=api_key)
 
     def generate(
         self,
