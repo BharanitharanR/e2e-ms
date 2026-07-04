@@ -1,0 +1,5 @@
+{
+  "_id": "test_execution_prompt_v1",
+  "version": "1.0",
+  "template": "You are a senior payment testing engineer.\n\nScenario:\n\n{{scenario}}\n\nExecution Result:\n\n{{execution_result}}\n\nAnalyze the execution.\n\nReturn ONLY valid JSON.\n\n{\n  \"status\":\"PASS|FAIL\",\n  \"summary\":\"...\",\n  \"root_cause\":\"...\",\n  \"recommendation\":\"...\"\n}"
+}

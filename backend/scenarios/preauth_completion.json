@@ -1,0 +1,26 @@
+{
+  "id": "preauth_completion",
+  "name": "Pre-Authorization Completion (Clearing Advice) — $145",
+  "description": "Clearing advice that completes the hotel PRE-AUTH. The actual charge is $145 (less than the $150 hold). Links back to the original auth via original_transaction_id. Demonstrates the ledger link and partial completion path.",
+  "event_type": "advice",
+  "advice_type": "CLEARING",
+  "original_transaction_id": "TXN_PREAUTH_001",
+  "tags": ["preauth", "completion", "advice", "enrichment-demo"],
+  "request": {
+    "transaction_id": "TXN_PREAUTH_COMP_001",
+    "pan": "4111111111111111",
+    "amount": 14500,
+    "currency": "840",
+    "mcc": "7011",
+    "merchant_name": "Grand Hotel SF",
+    "merchant_city": "San Francisco",
+    "merchant_state": "CA",
+    "merchant_country": "USA",
+    "pos_entry_mode": "071",
+    "terminal_id": "HOTEL001",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
+}

@@ -1,0 +1,27 @@
+{
+  "id": "atm_withdrawal_approve",
+  "name": "ATM Cash Withdrawal — Approve",
+  "description": "ATM cash withdrawal $20 with PIN (DE52). Processing code 01xxxx = Cash. MCC 6011 = ATM. Shows PIN field and cash-specific enrichment differentiating from a purchase.",
+  "event_type": "authorization",
+  "tags": ["atm", "cash", "pin", "enrichment-demo"],
+  "request": {
+    "transaction_id": "TXN_ATM_001",
+    "pan": "4111111111111111",
+    "amount": 2000,
+    "currency": "840",
+    "mcc": "6011",
+    "merchant_name": "Chase ATM Downtown",
+    "merchant_city": "San Francisco",
+    "merchant_state": "CA",
+    "merchant_country": "USA",
+    "pos_entry_mode": "011",
+    "terminal_id": "ATM00001",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456",
+    "icc_data": null,
+    "surcharge_amount": 250,
+    "notes": "ATM: processing_code=012000 (cash withdrawal), DE52 PIN block present"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED"
+}

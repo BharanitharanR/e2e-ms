@@ -1,0 +1,18 @@
+network: visa
+bin_ranges: ["4"]
+mti:
+  auth_request: "0100"
+  auth_response: "0110"
+  reversal: "0420"
+packager: iso-engine/packagers/visa.xml
+private_fields:
+  - { de: 44, name: "Additional response data",  format: "ans..25 LLVAR",  usage: response }
+  - { de: 62, name: "Custom payment service",     format: "ans..255 LLLVAR" }   # Visa TID
+  - { de: 63, name: "Network data (V.I.P.)",      format: "ans..255 LLLVAR" }
+edits:
+  require: [2, 3, 4, 7, 11, 22, 32, 37, 41, 49]
+  cvv_field: 44
+notes: "BASE I authorization; Visa Transaction ID in DE62; V.I.P. network data in DE63."
+private_de_values:
+  62: "VISA_TID_{stan}"
+  63: "VIP_DATA_{stan}"

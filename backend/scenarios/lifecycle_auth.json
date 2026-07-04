@@ -1,0 +1,24 @@
+{
+  "id": "lifecycle_auth",
+  "name": "Lifecycle Auth — $75 Approve",
+  "description": "Step 1 of linked lifecycle chain: $75 auth that will be partially cleared.",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_LIFECYCLE_AUTH",
+    "pan": "4111111111111111",
+    "amount": 7500,
+    "currency": "840",
+    "mcc": "5411",
+    "merchant_name": "Lifecycle Merchant",
+    "merchant_city": "San Francisco",
+    "merchant_state": "CA",
+    "merchant_country": "USA",
+    "pos_entry_mode": "071",
+    "terminal_id": "TERM_LC01",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456"
+  },
+  "expected_network_response_code": "00",
+  "expected_customer_decision": "APPROVED",
+  "tags": ["lifecycle", "auth"]
+}

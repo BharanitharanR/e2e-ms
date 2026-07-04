@@ -47,8 +47,32 @@ and can be swapped for your real endpoint.
 
 ## Run it
 
+### Option A — No Docker (host quickstart) ✅ Recommended for development
+
 ```bash
-docker-compose up --build
+# Prerequisites: Python 3.9+, pip
+pip install fastapi uvicorn requests streamlit pyyaml pyiso8583 anthropic
+
+# Optional: set your Anthropic key for AI Copilot features
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Start all 6 services on localhost:
+make demo-local
+# or directly:
+bash start-local.sh
+```
+
+This launches `customer_jit` (:8001), `acquirer` (:8101), `visa` (:8102),
+`marqeta_simulator` (:8103), `backend` (:8000), and `Streamlit` (:8501) as
+background processes — all on `127.0.0.1`. Press **Ctrl-C** to stop all.
+
+Service logs are written to `.runlogs/`.
+
+### Option B — Docker (recommended for demos / shared environments)
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+make demo          # or: docker-compose up --build
 ```
 
 Then open the UI at **http://localhost:8501**.

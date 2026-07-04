@@ -7,10 +7,12 @@ import streamlit as st
 import pandas as pd
 from utils.api_client import api_get, api_post, api_get_raw
 from utils.session_state import init_session_state
+from utils.theme import inject_theme
 from utils.html_report import build_html_report, build_junit_xml
 
 init_session_state()
-st.set_page_config(page_title="e2MS — Suite Runner", page_icon="🧪", layout="wide")
+st.set_page_config(page_title="Paycon e2ePS — Suite Runner", page_icon="🧪", layout="wide")
+inject_theme()
 
 st.title("🧪 Suite Runner")
 

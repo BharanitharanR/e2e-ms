@@ -12,7 +12,14 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 app = FastAPI(title="Visa Network Simulator")
-MARQETA_URL = os.getenv("MARQETA_URL", "http://marqeta_simulator:8103/issuer/authorize")
+
+def _resolve_url(docker_name: str, docker_port: int, path: str = "") -> str:
+    """Resolve Docker service URL to localhost when running on host OS."""
+    if os.path.exists("/.dockerenv"):
+        return f"http://{docker_name}:{docker_port}{path}"
+    return f"http://127.0.0.1:{docker_port}{path}"
+
+MARQETA_URL = os.getenv("MARQETA_URL", _resolve_url("marqeta_simulator", 8103, "/issuer/authorize"))
 
 
 def _post_with_retry(url, body, attempts=3, timeout=10):

@@ -14,12 +14,26 @@ import requests
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import Response
 import uvicorn
+from backend.bootstrap import bootstrap
+from backend.mongo_repository import (
+    get_scenarios,
+    get_scenario_by_id,
+    save_scenario
+)
 
 # Terminal lives in the same `backend` folder; support both run styles.
 try:
     from backend.terminal import Terminal
 except ImportError:  # pragma: no cover
     from terminal import Terminal
+
+# ISO 8583 origination + JPF mapping (T3/T4 — Phase 1).
+try:
+    from backend.network.originator import build_0100
+    from backend.mapping.engine import map_to_jpf
+    _ISO_AVAILABLE = True
+except Exception:  # pragma: no cover
+    _ISO_AVAILABLE = False
 
 # Suite catalogue.
 try:
@@ -32,6 +46,22 @@ try:
     from backend.chip_terminal import SoftwareCardEmulator
 except ImportError:
     from chip_terminal import SoftwareCardEmulator
+
+# Settlement engine (T1.1 — Phase 3).
+try:
+    from backend.settlement import router as settlement_router
+    _SETTLEMENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    settlement_router = None
+    _SETTLEMENT_AVAILABLE = False
+
+# Interchange engine (T1.3 — Phase 3).
+try:
+    from backend.interchange import router as interchange_router
+    _INTERCHANGE_AVAILABLE = True
+except Exception:  # pragma: no cover
+    interchange_router = None
+    _INTERCHANGE_AVAILABLE = False
 
 # SQLite persistence layer.
 try:
@@ -62,12 +92,27 @@ except Exception:  # pragma: no cover
     ai_router = None
     _AI_AVAILABLE = False
 
-ACQUIRER_URL = os.getenv("ACQUIRER_URL", "http://acquirer:8101/authorize")
-CUSTOMER_JIT_RESET_URL = os.getenv("CUSTOMER_JIT_RESET_URL", "http://customer_jit:8001/reset")
-CUSTOMER_JIT_URL = os.getenv("CUSTOMER_JIT_URL", "http://customer_jit:8001")
-MARQETA_SIM_URL = os.getenv("MARQETA_SIM_URL", "http://marqeta_simulator:8103")
-ACQUIRER_SVC_URL = os.getenv("ACQUIRER_SVC_URL", "http://acquirer:8101")
-VISA_SVC_URL = os.getenv("VISA_SVC_URL", "http://visa:8102")
+# Enrichment trace builder (T1.1 — Phase 5).
+try:
+    from backend.enrichment import build_enrichment_trace
+    _ENRICHMENT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    _ENRICHMENT_AVAILABLE = False
+    def build_enrichment_trace(*args, **kwargs):  # type: ignore[misc]
+        return []
+
+def _resolve_url(docker_name: str, docker_port: int, path: str = "") -> str:
+    """Resolve Docker service URL to localhost when running on host OS."""
+    if os.path.exists("/.dockerenv"):
+        return f"http://{docker_name}:{docker_port}{path}"
+    return f"http://127.0.0.1:{docker_port}{path}"
+
+ACQUIRER_URL = os.getenv("ACQUIRER_URL", _resolve_url("acquirer", 8101, "/authorize"))
+CUSTOMER_JIT_RESET_URL = os.getenv("CUSTOMER_JIT_RESET_URL", _resolve_url("customer_jit", 8001, "/reset"))
+CUSTOMER_JIT_URL = os.getenv("CUSTOMER_JIT_URL", _resolve_url("customer_jit", 8001))
+MARQETA_SIM_URL = os.getenv("MARQETA_SIM_URL", _resolve_url("marqeta_simulator", 8103))
+ACQUIRER_SVC_URL = os.getenv("ACQUIRER_SVC_URL", _resolve_url("acquirer", 8101))
+VISA_SVC_URL = os.getenv("VISA_SVC_URL", _resolve_url("visa", 8102))
 SCENARIOS_DIR = os.path.join(os.path.dirname(__file__), "scenarios")
 
 app = FastAPI(title="Marqeta E2E Simulator Orchestrator")
@@ -75,6 +120,14 @@ app = FastAPI(title="Marqeta E2E Simulator Orchestrator")
 # Attach AI routes if available.
 if ai_router is not None:
     app.include_router(ai_router)
+
+# Attach settlement router (T1.1).
+if settlement_router is not None:
+    app.include_router(settlement_router)
+
+# Attach interchange router (T1.3).
+if interchange_router is not None:
+    app.include_router(interchange_router)
 
 # Module-level chip card emulator singleton.
 _chip_emulator = SoftwareCardEmulator()
@@ -85,8 +138,10 @@ _chip_emulator = SoftwareCardEmulator()
 # --------------------------------------------------------------------------- #
 @app.on_event("startup")
 def _startup():
+    print("=== STARTUP HOOK CALLED ===")
     os.makedirs(SCENARIOS_DIR, exist_ok=True)
     init_db()
+    bootstrap()
 
 
 # --------------------------------------------------------------------------- #
@@ -105,17 +160,42 @@ def _read_scenarios():
     return scenarios
 
 
-def _find_scenario(scenario_id):
+def _find_scenario(
+    scenario_id
+):
+
+    scenario = get_scenario_by_id(
+        scenario_id
+    )
+
+    if scenario:
+        return scenario
+
     for s in _read_scenarios():
-        if s.get("id") == scenario_id or s.get("_file", "").rstrip(".json") == scenario_id:
+
+        if (
+            s.get("id") == scenario_id
+            or
+            s.get(
+                "_file",
+                ""
+            ).rstrip(
+                ".json"
+            ) == scenario_id
+        ):
             return s
+
     return None
 
 
 # --------------------------------------------------------------------------- #
 # Core execution helper (shared by /execute and /execute_suite)
 # --------------------------------------------------------------------------- #
-def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
+def _execute_scenario_internal(
+    scenario: dict,
+    unique: bool = True,
+    network_override: str | None = None,
+) -> dict:
     """Run a scenario dict end-to-end and return a trace dict."""
     event_type = scenario.get("event_type", "authorization")
     base_request = dict(scenario.get("request", {}))
@@ -134,6 +214,48 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
             request_dict["advice_type"] = scenario.get("advice_type", "CLEARING")
     else:
         request_dict["event_type"] = "authorization"
+
+    # ── ISO 8583 origination + JPF mapping (T3/T4, T0.2) ────────────────────
+    # Resolve network ONCE here; stamp it on request_dict so the entire live
+    # HTTP chain (acquirer → visa → marqeta_simulator) sees the real network.
+    # The marqeta_simulator reads body["network"] to tag ledger entries and
+    # pgfs.* webhooks, making the network authoritative end-to-end (T0.2).
+    iso_message: dict = {}
+    jpf: dict = {}
+    iso_warnings: list = []
+
+    # Resolve network — override > scenario field > BIN routing
+    _net_override = network_override or scenario.get("network")
+    resolved_network: str = "visa"  # fallback default
+    if _ISO_AVAILABLE:
+        try:
+            orig = build_0100(request_dict, network_override=_net_override)
+            resolved_network = orig.network
+            iso_message = {
+                "network":       orig.network,
+                "mti":           orig.mti,
+                "stan":          orig.stan,
+                "rrn":           orig.rrn,
+                "fields":        orig.iso_fields,
+                "packed_hex":    orig.packed_hex,
+                "unpacked":      orig.unpacked_fields,
+                "private_des":   orig.private_des,
+            }
+            map_result = map_to_jpf(
+                orig.unpacked_fields,
+                orig.network,
+                icc_hex=request_dict.get("icc_data"),
+            )
+            jpf = map_result.jpf
+            iso_warnings = map_result.warnings
+        except Exception as exc:  # pragma: no cover
+            iso_message = {"error": str(exc)}
+    elif _net_override:
+        resolved_network = _net_override
+
+    # T0.2 — stamp resolved network onto the live HTTP payload so the issuer
+    # ledger and pgfs.* webhooks reflect the real network, not "unknown".
+    request_dict["network"] = resolved_network
 
     ts_outbound = datetime.now(timezone.utc).isoformat()
 
@@ -159,6 +281,22 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
     jit_method = response_json.get("jit_funding_method")
     customer_body = response_json.get("customer_response_body")
 
+    # T0.4 — Ensure the step-6 JIT payload is always a populated dict so
+    # the demo-mode JIT node renders a meaningful response (not a blank panel).
+    jit_decision_payload: dict = {
+        "decision":      actual_dec or "UNKNOWN",
+        "rc":            actual_rc  or "?",
+        "network":       resolved_network,
+        "jit_method":    jit_method or "pgfs.authorization",
+        "event_type":    marqeta_event_type or "transaction.authorization",
+        "transaction_id": request_dict.get("transaction_id"),
+        "amount":        request_dict.get("amount"),
+        "currency":      request_dict.get("currency"),
+    }
+    if isinstance(customer_body, dict):
+        # Merge the raw customer body on top so any custom fields are visible.
+        jit_decision_payload.update({k: v for k, v in customer_body.items() if v is not None})
+
     audit_trail = [
         {
             "step": 1,
@@ -180,15 +318,15 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
             "step": 3,
             "actor": "Acquirer",
             "direction": "→",
-            "label": "Acquirer forwards ISO-8583 message to Visa network",
+            "label": f"Acquirer forwards ISO-8583 message to {resolved_network.capitalize()} network",
             "payload": request_dict,
             "timestamp": ts_outbound,
         },
         {
             "step": 4,
-            "actor": "Visa Network",
+            "actor": f"{resolved_network.capitalize()} Network",
             "direction": "→",
-            "label": "Visa network routes authorization request to Marqeta issuer processor",
+            "label": f"{resolved_network.capitalize()} network routes authorization request to Marqeta issuer processor",
             "payload": request_dict,
             "timestamp": ts_outbound,
         },
@@ -216,15 +354,15 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
             "step": 6,
             "actor": "Customer JIT (System Under Test)",
             "direction": "←",
-            "label": f"Customer JIT decision: {actual_dec}",
-            "payload": customer_body,
+            "label": f"Customer JIT decision: {actual_dec} (RC: {actual_rc})",
+            "payload": jit_decision_payload,   # T0.4: always populated
             "timestamp": ts_inbound,
         },
         {
             "step": 7,
-            "actor": "Visa Network",
+            "actor": f"{resolved_network.capitalize()} Network",
             "direction": "←",
-            "label": f"Visa returns network response code: {actual_rc}",
+            "label": f"{resolved_network.capitalize()} returns network response code: {actual_rc}",
             "payload": {
                 "response_code": response_json.get("response_code"),
                 "auth_code": response_json.get("auth_code"),
@@ -258,6 +396,16 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
         },
     ]
 
+    # ── T1.1 — Per-hop enrichment trace ─────────────────────────────────────
+    enrichment_trace = build_enrichment_trace(
+        request_dict=request_dict,
+        iso_message=iso_message,
+        jpf=jpf,
+        jit_payload=jit_decision_payload,
+        resolved_network=resolved_network,
+        response_json=response_json,
+    )
+
     trace = {
         "scenario_id": scenario.get("id"),
         "scenario_name": scenario.get("name"),
@@ -272,6 +420,12 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
         "passed": passed,
         "duration_ms": duration_ms,
         "audit_trail": audit_trail,
+        # ── Phase 1 additions (T5) ───────────────────────────────────────────
+        "iso_message":      iso_message,       # packed ISO 8583 artefacts
+        "jpf":              jpf,               # canonical JSON Payment Format
+        "iso_warnings":     iso_warnings,      # validation flags (e.g. EMV mismatches)
+        # ── Phase 5 additions (T1.1) ─────────────────────────────────────────
+        "enrichment_trace": enrichment_trace,  # per-hop ISO field additions
     }
 
     # Persist to SQLite.
@@ -289,6 +443,181 @@ def _execute_scenario_internal(scenario: dict, unique: bool = True) -> dict:
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "orchestrator"}
+
+
+@app.get("/iso-engine/health")
+async def iso_engine_health():
+    """Proxy health check to the jPOS ISO engine sidecar (T2.1)."""
+    try:
+        from backend.network.jpos_bridge import health as jpos_health
+    except ImportError:
+        from network.jpos_bridge import health as jpos_health  # type: ignore
+    return jpos_health()
+
+
+@app.post("/iso-engine/pack")
+async def iso_engine_pack(request: Request):
+    """Delegate pack to jPOS sidecar (T2.1). Falls back to Python packer."""
+    try:
+        from backend.network.jpos_bridge import pack_via_jpos
+    except ImportError:
+        from network.jpos_bridge import pack_via_jpos  # type: ignore
+    body = await request.json()
+    result = pack_via_jpos(
+        fields=body.get("fields", {}),
+        network=body.get("network", "visa"),
+        mti=body.get("mti", "0100"),
+    )
+    if result is None:
+        return {"error": "jPOS sidecar unavailable — ISO_ENGINE_URL not set or unreachable"}
+    return {"hex": result.hex, "network": result.network, "mti": result.mti}
+
+
+@app.post("/iso-engine/unpack")
+async def iso_engine_unpack(request: Request):
+    """Delegate unpack to jPOS sidecar (T2.1). Falls back to Python packer."""
+    try:
+        from backend.network.jpos_bridge import unpack_via_jpos
+    except ImportError:
+        from network.jpos_bridge import unpack_via_jpos  # type: ignore
+    body = await request.json()
+    result = unpack_via_jpos(
+        hex_str=body.get("hex", ""),
+        network=body.get("network", "visa"),
+    )
+    if result is None:
+        return {"error": "jPOS sidecar unavailable — ISO_ENGINE_URL not set or unreachable"}
+    return {"fields": result.fields, "mti": result.mti, "network": result.network}
+
+
+@app.post("/iso-engine/send-tcp")
+async def iso_engine_send_tcp(request: Request):
+    """Send a packed ISO 8583 message over TCP/IP (P2 T2.1).
+
+    Tries the jPOS sidecar's /send-tcp endpoint first; if unavailable (no
+    ISO_ENGINE_URL) falls back to the pure-Python asyncio TCP channel.
+
+    Body fields:
+        packed_hex   str  — hex of the packed ISO 8583 message
+        host         str  — remote ISO host (REQUIRED for Python fallback)
+        port         int  — remote ISO port (REQUIRED for Python fallback)
+        mli_mode     str  — "2E" | "2I" | "4E" | "4I"  (default "2E")
+        tls          bool — wrap in TLS (default false)
+        ca_cert_pem  str  — path to CA cert PEM (optional, for TLS)
+        timeout      float — connect + read timeout in seconds (default 15)
+        channel_type str  — "NACChannel" | "ASCIIChannel" | ... (jPOS hint)
+        network      str  — visa | mastercard | amex | discover (for context)
+
+    Returns:
+        response_hex, elapsed_ms, and optionally error.
+    """
+    try:
+        from backend.network.jpos_bridge import ISO_ENGINE_URL
+        import requests as _sync_req
+        _jpos_available = bool(ISO_ENGINE_URL)
+    except ImportError:
+        _jpos_available = False
+        ISO_ENGINE_URL = None
+
+    body = await request.json()
+    packed_hex   = body.get("packed_hex", "")
+    host         = body.get("host", "")
+    port         = int(body.get("port", 0))
+    mli_mode     = body.get("mli_mode", "2E")
+    tls          = bool(body.get("tls", False))
+    ca_cert_pem  = body.get("ca_cert_pem")
+    timeout      = float(body.get("timeout", 15))
+    channel_type = body.get("channel_type", "NACChannel")
+    network      = body.get("network", "visa")
+
+    if not packed_hex:
+        return {"error": "packed_hex is required"}
+
+    # ── Try jPOS sidecar first ────────────────────────────────────────────────
+    if _jpos_available and ISO_ENGINE_URL:
+        try:
+            jpos_resp = _sync_req.post(
+                f"{ISO_ENGINE_URL}/send-tcp",
+                json={
+                    "packed_hex":   packed_hex,
+                    "host":         host,
+                    "port":         port,
+                    "mli_mode":     mli_mode,
+                    "tls":          tls,
+                    "channel_type": channel_type,
+                    "network":      network,
+                    "timeout":      timeout,
+                },
+                timeout=timeout + 5,
+            )
+            if jpos_resp.status_code == 200:
+                data = jpos_resp.json()
+                data["transport"] = "jpos"
+                return data
+        except Exception as exc:
+            log.warning("jPOS /send-tcp unavailable, falling back to Python: %s", exc)
+
+    # ── Python asyncio fallback ───────────────────────────────────────────────
+    if not host or not port:
+        return {
+            "error": "host and port are required when jPOS sidecar is unavailable",
+            "transport": "python_fallback",
+        }
+
+    try:
+        from backend.network.tcp_channel import send_iso_tcp
+    except ImportError:
+        from network.tcp_channel import send_iso_tcp  # type: ignore
+
+    result = send_iso_tcp(
+        host=host, port=port, packed_hex=packed_hex,
+        mli_mode=mli_mode, tls=tls, ca_cert_pem=ca_cert_pem,
+        connect_timeout=min(timeout, 30),
+        read_timeout=min(timeout, 30),
+    )
+    result["transport"] = "python_fallback"
+    result["network"] = network
+    return result
+
+
+@app.post("/iso-engine/net-mgmt")
+async def iso_engine_net_mgmt(request: Request):
+    """Send a network management message (0800) — sign-on / echo / sign-off (P2 T2.2).
+
+    Body fields:
+        action       str  — "sign_on" | "echo" | "sign_off"  (maps to DE70)
+        host         str  — remote ISO host
+        port         int  — remote ISO port
+        mli_mode     str  — "2E" | "2I" | "4E" | "4I"  (default "2E")
+        tls          bool — TLS wrap  (default false)
+        timeout      float — timeout in seconds (default 10)
+        stan         str  — 6-digit STAN override (default "000001")
+    """
+    body = await request.json()
+    action   = body.get("action", "echo").lower()
+    host     = body.get("host", "")
+    port     = int(body.get("port", 0))
+    mli_mode = body.get("mli_mode", "2E")
+    tls      = bool(body.get("tls", False))
+    timeout  = float(body.get("timeout", 10))
+    stan     = str(body.get("stan", "000001")).zfill(6)
+
+    if not host or not port:
+        return {"error": "host and port are required"}
+
+    try:
+        from backend.network.tcp_channel import sign_on, echo, sign_off
+    except ImportError:
+        from network.tcp_channel import sign_on, echo, sign_off  # type: ignore
+
+    fn = {"sign_on": sign_on, "echo": echo, "sign_off": sign_off}.get(action)
+    if fn is None:
+        return {"error": f"Unknown action '{action}'. Valid: sign_on, echo, sign_off"}
+
+    result = fn(host=host, port=port, stan=stan, mli_mode=mli_mode,
+                tls=tls, timeout=timeout)
+    result["action"] = action
+    return result
 
 
 @app.get("/health/all")
@@ -328,7 +657,7 @@ async def list_scenarios(
     search: str = Query(None),
 ):
     """Return paginated scenario list with optional filtering."""
-    all_scenarios = _read_scenarios()
+    all_scenarios = get_scenarios()
 
     # Filter
     filtered = []
@@ -357,11 +686,166 @@ async def list_scenarios(
 
 
 @app.post("/execute/{scenario_id}")
-async def execute(scenario_id: str, unique: bool = True):
+async def execute(
+    scenario_id: str,
+    unique: bool = True,
+    network: str = Query(None, description="Force a specific network (visa|mastercard|amex|discover)"),
+):
     scenario = _find_scenario(scenario_id)
     if scenario is None:
         return {"error": f"scenario '{scenario_id}' not found"}
-    return _execute_scenario_internal(scenario, unique=unique)
+    return _execute_scenario_internal(scenario, unique=unique, network_override=network)
+
+
+# --------------------------------------------------------------------------- #
+# Ad-hoc execute endpoint (T0.1 — Transaction Builder)
+# --------------------------------------------------------------------------- #
+# Valid test-card PAN presets per network (T0.3).
+_TEST_CARD_PRESETS = {
+    "visa":       {"pan": "4111111111111111", "pan_length": 16, "expiry": "1228"},
+    "mastercard": {"pan": "5555555555554444", "pan_length": 16, "expiry": "1228"},
+    "amex":       {"pan": "378282246310005",  "pan_length": 15, "expiry": "1228"},
+    "discover":   {"pan": "6011111111111117", "pan_length": 16, "expiry": "1228"},
+}
+
+_LUHN_EXEMPT_PRESETS = {
+    p["pan"] for p in _TEST_CARD_PRESETS.values()
+}
+
+
+def _luhn_check(pan: str) -> bool:
+    """Luhn algorithm — returns True if PAN is valid."""
+    digits = [int(d) for d in pan if d.isdigit()]
+    odd_digits = digits[-1::-2]
+    even_digits = digits[-2::-2]
+    total = sum(odd_digits)
+    for d in even_digits:
+        total += sum(divmod(d * 2, 10))
+    return total % 10 == 0
+
+
+def _detect_network_from_pan(pan: str) -> str:
+    """Lightweight BIN detection for validation warnings (no YAML load)."""
+    p = pan.replace(" ", "")
+    if p.startswith(("34", "37")):
+        return "amex"
+    if p.startswith("6011") or p.startswith("65"):
+        return "discover"
+    if p.startswith("5") and 2221 <= int(p[:4]) <= 2720:
+        return "mastercard"
+    if p.startswith(("51", "52", "53", "54", "55")):
+        return "mastercard"
+    if p.startswith("4"):
+        return "visa"
+    return "unknown"
+
+
+@app.post("/execute_adhoc")
+async def execute_adhoc(request: Request):
+    """Build and immediately execute an ad-hoc transaction from a flexible body.
+
+    Body fields (all optional with sensible defaults):
+        pan             str   — card PAN (16 digits for Visa/MC/Disc; 15 for Amex)
+        network         str   — visa | mastercard | amex | discover | auto (default)
+        amount          int   — minor units / cents (default 1000 = $10.00)
+        currency        str   — ISO 4217 numeric (default "840" = USD)
+        mcc             str   — 4-digit MCC (default "5411")
+        merchant_name   str
+        pos_entry_mode  str   — chip|contactless|magstripe|manual|ecommerce|071|051…
+        expiry          str   — YYMM or MMYY (informational; carried in DE14)
+        expected_rc     str   — expected network response code (default "00")
+        expected_decision str — APPROVED | DECLINED (default "APPROVED")
+
+    Returns the full execution trace (same shape as /execute).
+    Validation warnings (PAN–network mismatch, Luhn fail, Amex length) are
+    included in the trace as `adhoc_warnings`.
+    """
+    body = await request.json()
+
+    network_choice = (body.get("network") or "auto").lower()
+    if network_choice == "auto":
+        network_override = None
+    else:
+        network_override = network_choice
+
+    # PAN — default to the preset for the chosen network, or Visa if auto
+    _preset_net = network_choice if network_choice != "auto" else "visa"
+    default_pan = _TEST_CARD_PRESETS.get(_preset_net, _TEST_CARD_PRESETS["visa"])["pan"]
+    pan = (body.get("pan") or default_pan).replace(" ", "").replace("-", "")
+
+    # Validation warnings
+    adhoc_warnings: list[str] = []
+    detected = _detect_network_from_pan(pan)
+
+    # PAN length check
+    expected_len = 15 if detected == "amex" else 16
+    if len(pan) not in (15, 16):
+        adhoc_warnings.append(
+            f"PAN length {len(pan)} is unusual (expected 15 for Amex, 16 for others)."
+        )
+    elif detected == "amex" and len(pan) != 15:
+        adhoc_warnings.append(
+            f"Amex PAN should be 15 digits; got {len(pan)}."
+        )
+
+    # Luhn check (skip for known test presets)
+    if pan not in _LUHN_EXEMPT_PRESETS and not _luhn_check(pan):
+        adhoc_warnings.append(f"PAN fails Luhn check — verify the card number.")
+
+    # Network vs BIN consistency
+    if network_override and detected not in ("unknown",) and detected != network_override:
+        adhoc_warnings.append(
+            f"PAN BIN ({pan[:6]}) routes to '{detected}' but network is forced to "
+            f"'{network_override}'. Issuer may reject or mislabel the transaction."
+        )
+
+    # POS entry mode aliases
+    _entry_aliases = {
+        "chip":        "051",
+        "contactless": "071",
+        "magstripe":   "011",
+        "manual":      "010",
+        "ecommerce":   "810",
+    }
+    pos_mode = str(body.get("pos_entry_mode", "071"))
+    pos_mode = _entry_aliases.get(pos_mode.lower(), pos_mode)
+
+    scenario = {
+        "id":   f"adhoc_{int(time.time())}",
+        "name": body.get("name", "Ad-hoc transaction"),
+        "description": "Ad-hoc transaction from Transaction Builder",
+        "event_type": body.get("event_type", "authorization"),
+        "request": {
+            "transaction_id": body.get("transaction_id", f"ADHOC_{int(time.time())}"),
+            "pan":            pan,
+            "amount":         int(body.get("amount", 1000)),
+            "currency":       str(body.get("currency", "840")),
+            "mcc":            str(body.get("mcc", "5411")),
+            "merchant_name":  body.get("merchant_name", "Ad-hoc Merchant"),
+            "merchant_city":  body.get("merchant_city", "San Francisco"),
+            "merchant_state": body.get("merchant_state", "CA"),
+            "merchant_country": body.get("merchant_country", "USA"),
+            "pos_entry_mode": pos_mode,
+            "terminal_id":    body.get("terminal_id", "TERM9999"),
+            "acquiring_institution_id": "123456",
+            "forwarding_institution_id": "123456",
+            "datetime": datetime.now(timezone.utc).isoformat(),
+        },
+        "expected_network_response_code": body.get("expected_rc", "00"),
+        "expected_customer_decision":     body.get("expected_decision", "APPROVED"),
+        "tags": ["adhoc"],
+    }
+
+    trace = _execute_scenario_internal(scenario, unique=True, network_override=network_override)
+    trace["adhoc_warnings"] = adhoc_warnings
+    trace["detected_network"] = detected
+    return trace
+
+
+@app.get("/network/test_cards")
+async def get_test_cards():
+    """Return per-network test card presets (T0.3)."""
+    return _TEST_CARD_PRESETS
 
 
 # --------------------------------------------------------------------------- #
@@ -556,47 +1040,126 @@ async def history(
 # --------------------------------------------------------------------------- #
 @app.post("/generate")
 async def generate(request: Request):
+
     body = await request.json()
-    scenario_id = body.get("scenario_id") or f"gen_{int(time.time())}"
-    event_type = body.get("event_type", "authorization")
-    amount = int(body.get("amount", 2500))
+    print("=== NEW MONGO GENERATE ENDPOINT ===")
+    print(body)
+    scenario_id = (
+        body.get("scenario_id")
+        or body.get("id")
+        or f"gen_{int(time.time())}"
+    )
 
-    scenario = {
-        "id": scenario_id,
-        "name": body.get("name", scenario_id),
-        "description": body.get("description", f"Generated {event_type} for {amount} cents"),
-        "event_type": event_type,
-        "request": {
-            "transaction_id": body.get("transaction_id", f"TXN_{scenario_id.upper()}"),
-            "pan": body.get("pan", "4111111111111111"),
-            "amount": amount,
-            "currency": body.get("currency", "840"),
-            "mcc": body.get("mcc", "5411"),
-            "merchant_name": body.get("merchant_name", "Generated Merchant"),
-            "merchant_city": body.get("merchant_city", "San Francisco"),
-            "merchant_state": body.get("merchant_state", "CA"),
-            "merchant_country": body.get("merchant_country", "USA"),
-            "pos_entry_mode": body.get("pos_entry_mode", "051"),
-            "terminal_id": body.get("terminal_id", "TERM9999"),
-            "acquiring_institution_id": "123456",
-            "forwarding_institution_id": "123456",
-            "datetime": datetime.now(timezone.utc).isoformat(),
-        },
-        "expected_network_response_code": body.get("expected_response_code", "00"),
-        "expected_customer_decision": body.get("expected_customer_decision", "APPROVED"),
-        "tags": body.get("tags", []),
-    }
-    if event_type != "authorization":
-        scenario["original_transaction_id"] = body.get(
-            "original_transaction_id", "TXN_AUTH_001"
+    event_type = body.get(
+        "event_type",
+        "authorization"
+    )
+
+    amount = int(
+        body.get(
+            "amount",
+            body.get(
+                "request",
+                {}
+            ).get(
+                "amount",
+                2500
+            )
         )
+    )
 
-    os.makedirs(SCENARIOS_DIR, exist_ok=True)
-    out_path = os.path.join(SCENARIOS_DIR, f"{scenario_id}.json")
-    with open(out_path, "w") as fh:
-        json.dump(scenario, fh, indent=2)
-    return {"created": os.path.basename(out_path), "scenario": scenario}
+    # AI-generated scenario already complete
+    if "request" in body:
 
+        scenario = body
+
+    else:
+
+        scenario = {
+            "id": scenario_id,
+            "name": body.get(
+                "name",
+                scenario_id
+            ),
+            "description": body.get(
+                "description",
+                f"Generated {event_type}"
+            ),
+            "event_type": event_type,
+            "request": {
+                "transaction_id": body.get(
+                    "transaction_id",
+                    f"TXN_{scenario_id.upper()}"
+                ),
+                "pan": body.get(
+                    "pan",
+                    "4111111111111111"
+                ),
+                "amount": amount,
+                "currency": body.get(
+                    "currency",
+                    "840"
+                ),
+                "mcc": body.get(
+                    "mcc",
+                    "5411"
+                ),
+                "merchant_name": body.get(
+                    "merchant_name",
+                    "Generated Merchant"
+                ),
+                "merchant_city": body.get(
+                    "merchant_city",
+                    "San Francisco"
+                ),
+                "merchant_state": body.get(
+                    "merchant_state",
+                    "CA"
+                ),
+                "merchant_country": body.get(
+                    "merchant_country",
+                    "USA"
+                ),
+                "pos_entry_mode": body.get(
+                    "pos_entry_mode",
+                    "051"
+                ),
+                "terminal_id": body.get(
+                    "terminal_id",
+                    "TERM9999"
+                ),
+                "acquiring_institution_id": "123456",
+                "forwarding_institution_id": "123456",
+                "datetime": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+            },
+            "expected_network_response_code": body.get(
+                "expected_response_code",
+                "00"
+            ),
+            "expected_customer_decision": body.get(
+                "expected_customer_decision",
+                "APPROVED"
+            ),
+            "tags": body.get(
+                "tags",
+                []
+            ),
+        }
+
+    save_scenario(
+        scenario
+    )
+
+    print(
+        f"SAVED SCENARIO: {scenario['id']}"
+    )
+
+    return {
+        "created": scenario["id"],
+        "scenario": scenario
+    }
 
 # --------------------------------------------------------------------------- #
 # Webhook replay
@@ -773,6 +1336,335 @@ async def analytics_summary():
         "avg_latency_ms": avg_latency,
         "rc_codes_covered": len(rc_data),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Certification endpoint (T0.1)
+# --------------------------------------------------------------------------- #
+
+#: Scenarios every SUT must handle to earn certification.
+_CERTIFICATION_SCENARIOS = [
+    # RC matrix
+    "rc_51_insufficient_funds",
+    "rc_54_expired_card",
+    "rc_57_txn_not_permitted",
+    "rc_61_exceeds_limit",
+    "rc_62_restricted_card",
+    "rc_65_velocity_exceeded",
+    "rc_75_pin_retries",
+    "rc_91_issuer_unavailable",
+    "rc_96_system_error",
+    # Lifecycle happy paths
+    "authorization_approve",
+    "authorization_decline",
+    "advice_clearing",
+    "refund",
+    "suite_reversal",
+]
+
+_DEFAULT_CERT_THRESHOLD = 95   # pass-rate % required for certified=true
+
+
+@app.post("/certify")
+async def certify(request: Request):
+    """Run the fixed certification suite against the active environment.
+
+    Body (all optional):
+        threshold  int   — pass-rate % for certified=true  (default 95)
+        reset      bool  — reset JIT state before run      (default true)
+
+    Returns:
+        sut, timestamp, results, coverage{lifecycle_events_covered,
+        rc_codes_covered, score}, certified, threshold
+    """
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    threshold = int(body.get("threshold", _DEFAULT_CERT_THRESHOLD))
+    reset_jit = body.get("reset", True)
+
+    sut = get_active_environment()
+
+    if reset_jit:
+        try:
+            requests.post(CUSTOMER_JIT_RESET_URL, timeout=5)
+        except requests.RequestException:
+            pass
+
+    run_at = datetime.now(timezone.utc).isoformat()
+    results = []
+    lifecycle_covered: set = set()
+    rc_covered: set = set()
+
+    for scenario_id in _CERTIFICATION_SCENARIOS:
+        scenario = _find_scenario(scenario_id)
+        if scenario is None:
+            results.append({
+                "scenario_id":       scenario_id,
+                "name":              scenario_id,
+                "event_type":        "unknown",
+                "expected_rc":       None,
+                "actual_rc":         None,
+                "expected_decision": None,
+                "actual_decision":   None,
+                "passed":            False,
+                "duration_ms":       0,
+                "error":             "scenario not found",
+            })
+            continue
+
+        trace = _execute_scenario_internal(scenario, unique=True)
+        evt    = scenario.get("event_type", "authorization")
+        act_rc = trace.get("actual_network_response_code")
+
+        if trace.get("passed"):
+            lifecycle_covered.add(evt)
+            if act_rc:
+                rc_covered.add(act_rc)
+
+        results.append({
+            "scenario_id":       scenario_id,
+            "name":              scenario.get("name", scenario_id),
+            "event_type":        evt,
+            "expected_rc":       trace.get("expected_network_response_code"),
+            "actual_rc":         act_rc,
+            "expected_decision": trace.get("expected_customer_decision"),
+            "actual_decision":   trace.get("actual_customer_decision"),
+            "passed":            trace.get("passed", False),
+            "duration_ms":       trace.get("duration_ms", 0),
+            "audit_trail":       trace.get("audit_trail", []),
+            "iso_message":       trace.get("iso_message", {}),
+            "jpf":               trace.get("jpf", {}),
+        })
+
+    total        = len(results)
+    passed_count = sum(1 for r in results if r["passed"])
+    score        = round(passed_count / total * 100, 1) if total else 0.0
+    certified    = score >= threshold
+
+    return {
+        "sut":       sut,
+        "timestamp": run_at,
+        "results":   results,
+        "coverage": {
+            "lifecycle_events_covered": sorted(lifecycle_covered),
+            "rc_codes_covered":         sorted(rc_covered),
+            "total_scenarios":          total,
+            "passed_scenarios":         passed_count,
+            "score":                    score,
+        },
+        "certified": certified,
+        "threshold": threshold,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# DB validation endpoint (T1.2 — data-at-rest vs data-in-motion)
+# --------------------------------------------------------------------------- #
+
+@app.get("/validate/db/{transaction_id}")
+async def validate_db_transaction(transaction_id: str):
+    """Cross-reference the persisted DB record against the live ledger entry.
+
+    Checks for field drift between:
+      - The request_json stored in SQLite (data-at-rest)
+      - The live issuer ledger entry in marqeta_simulator (data-in-motion)
+
+    Returns a validation report with any mismatches found.
+    """
+    # Pull the DB record
+    db_result = get_transactions_page(page=1, limit=1, scenario_id=transaction_id)
+    db_items = db_result.get("items", [])
+
+    # Also search by transaction_id field inside request_json
+    # (scenario_id != transaction_id in most cases)
+    db_record = None
+    if db_items:
+        db_record = db_items[0]
+    else:
+        # Search all recent transactions for a matching transaction_id in the request
+        all_txns = get_recent_transactions(limit=500)
+        for t in all_txns:
+            req_json = t.get("request_json") or {}
+            if isinstance(req_json, str):
+                try:
+                    req_json = json.loads(req_json)
+                except Exception:
+                    req_json = {}
+            if req_json.get("transaction_id") == transaction_id:
+                db_record = t
+                break
+
+    if db_record is None:
+        return {
+            "found":      False,
+            "valid":      False,
+            "errors":     [{"code": "NOT_FOUND",
+                            "message": f"transaction_id '{transaction_id}' not in DB"}],
+            "warnings":   [],
+        }
+
+    # Pull the ledger entry
+    try:
+        ledger_resp = requests.get(
+            f"{MARQETA_SIM_URL}/issuer/ledger",
+            params={"transaction_id": transaction_id},
+            timeout=5,
+        )
+        if ledger_resp.status_code == 404:
+            ledger_entry = None
+        else:
+            ledger_entry = ledger_resp.json()
+    except requests.RequestException:
+        ledger_entry = None
+
+    errors   = []
+    warnings = []
+
+    req_json = db_record.get("request_json") or {}
+    if isinstance(req_json, str):
+        try:
+            req_json = json.loads(req_json)
+        except Exception:
+            req_json = {}
+
+    resp_json = db_record.get("response_json") or {}
+    if isinstance(resp_json, str):
+        try:
+            resp_json = json.loads(resp_json)
+        except Exception:
+            resp_json = {}
+
+    # DB-only checks
+    db_amount   = req_json.get("amount")
+    db_currency = req_json.get("currency")
+    db_network  = req_json.get("network")
+
+    if ledger_entry:
+        # Amount reconciliation
+        ledger_amount = ledger_entry.get("amount")
+        if db_amount is not None and ledger_amount is not None:
+            if int(db_amount) != int(ledger_amount):
+                errors.append({
+                    "code":    "AMOUNT_DRIFT",
+                    "message": (
+                        f"amount mismatch: DB has {db_amount}, "
+                        f"ledger has {ledger_amount}"
+                    ),
+                    "db_value":     db_amount,
+                    "ledger_value": ledger_amount,
+                })
+
+        # Currency reconciliation
+        ledger_currency = ledger_entry.get("currency")
+        if db_currency and ledger_currency and db_currency != ledger_currency:
+            errors.append({
+                "code":    "CURRENCY_DRIFT",
+                "message": (
+                    f"currency mismatch: DB has {db_currency!r}, "
+                    f"ledger has {ledger_currency!r}"
+                ),
+                "db_value":     db_currency,
+                "ledger_value": ledger_currency,
+            })
+
+        # Network reconciliation
+        ledger_network = ledger_entry.get("network")
+        if db_network and ledger_network:
+            if db_network.lower() != ledger_network.lower():
+                errors.append({
+                    "code":    "NETWORK_DRIFT",
+                    "message": (
+                        f"network mismatch: DB has {db_network!r}, "
+                        f"ledger has {ledger_network!r}"
+                    ),
+                    "db_value":     db_network,
+                    "ledger_value": ledger_network,
+                })
+
+        # State sanity
+        ledger_state = ledger_entry.get("state", "UNKNOWN")
+        db_passed    = db_record.get("passed", False)
+        if not db_passed and ledger_state == "CLEARED":
+            warnings.append(
+                f"Transaction is CLEARED in ledger but marked FAILED in DB "
+                f"(RC={db_record.get('actual_rc')})."
+            )
+    else:
+        warnings.append(
+            f"Transaction '{transaction_id}' not found in live ledger "
+            "(may be a declined auth or from a prior run)."
+        )
+
+    return {
+        "found":        True,
+        "transaction_id": transaction_id,
+        "valid":        len(errors) == 0,
+        "errors":       errors,
+        "warnings":     warnings,
+        "db_record": {
+            "scenario_id":   db_record.get("scenario_id"),
+            "event_type":    db_record.get("event_type"),
+            "amount":        db_amount,
+            "currency":      db_currency,
+            "network":       db_network,
+            "actual_rc":     db_record.get("actual_rc"),
+            "actual_decision": db_record.get("actual_decision"),
+            "passed":        db_record.get("passed"),
+            "timestamp":     db_record.get("timestamp"),
+        },
+        "ledger_entry": ledger_entry,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Audit export endpoint (T2.3)
+# --------------------------------------------------------------------------- #
+
+@app.get("/history/export")
+async def history_export(
+    format: str = Query("json", description="json or csv"),
+    limit: int = Query(500, ge=1, le=5000),
+):
+    """Export transaction history as JSON or CSV for audit purposes."""
+    import io
+    from fastapi.responses import StreamingResponse
+
+    page_result = get_transactions_page(page=1, limit=limit)
+    items = page_result.get("items", [])
+
+    if format == "csv":
+        import csv
+        output = io.StringIO()
+        fieldnames = [
+            "id", "scenario_id", "scenario_name", "event_type", "timestamp",
+            "passed", "expected_rc", "actual_rc", "expected_decision",
+            "actual_decision", "duration_ms",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in items:
+            writer.writerow(row)
+        output.seek(0)
+        return StreamingResponse(
+            io.BytesIO(output.getvalue().encode()),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=audit_export.csv"},
+        )
+
+    payload = json.dumps({
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(items),
+        "items": items,
+    }, indent=2, default=str)
+    return StreamingResponse(
+        io.BytesIO(payload.encode()),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=audit_export.json"},
+    )
 
 
 if __name__ == "__main__":

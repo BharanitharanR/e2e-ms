@@ -1,0 +1,16 @@
+network: amex
+bin_ranges: ["34", "37"]
+mti:
+  auth_request: "0100"
+  auth_response: "0110"
+  reversal: "0420"
+packager: iso-engine/packagers/amex.xml
+private_fields:
+  - { de: 47, name: "Additional data (national)", format: "ans..999 LLLVAR" }
+  - { de: 63, name: "Amex private data",          format: "ans..999 LLLVAR" }
+edits:
+  require: [2, 3, 4, 7, 11, 22, 32, 37, 41, 49]
+notes: "GCAG authorization; Amex private structures in DE47/DE63."
+private_de_values:
+  47: "AMEX_NAT_{stan}"
+  63: "AMEX_PRIV_{stan}"

@@ -1,0 +1,19 @@
+network: mastercard
+bin_ranges: ["5", "2221-2720"]
+mti:
+  auth_request: "0100"
+  auth_response: "0110"
+  reversal: "0420"
+packager: iso-engine/packagers/mastercard.xml
+private_fields:
+  - { de: 48, name: "Additional data (PDS)",  format: "ans..999 LLLVAR", subelements: pds }
+  - { de: 61, name: "POS data",               format: "ans..999 LLLVAR" }
+  - { de: 63, name: "Network data (Banknet)", format: "ans..999 LLLVAR" }
+edits:
+  require: [2, 3, 4, 7, 11, 22, 32, 37, 41, 49]
+  pds_field: 48
+notes: "CIS authorization; PDS sub-elements in DE48; Banknet reference in DE63."
+private_de_values:
+  48: "MC_PDS_{stan}"
+  61: "MC_POS_{stan}"
+  63: "BANKNET_{stan}"

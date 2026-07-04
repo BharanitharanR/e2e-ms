@@ -1,0 +1,129 @@
+# docker-compose.demo.yml
+# "Claude-only" demo profile — no Ollama or MongoDB required.
+# Spins up the 6 core services (backend, acquirer, visa, marqeta_simulator,
+# customer_jit, frontend) and exposes the Streamlit UI on port 8501.
+#
+# Usage:
+#   export ANTHROPIC_API_KEY=sk-ant-...
+#   docker compose -f docker-compose.demo.yml up --build
+#
+# Or via the Makefile shortcut:
+#   make demo
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ACQUIRER_URL=http://acquirer:8101/authorize
+      - CUSTOMER_JIT_RESET_URL=http://customer_jit:8001/reset
+      - DB_PATH=/data/simulator.db
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set — run: export ANTHROPIC_API_KEY=sk-ant-...}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-opus-4-5}
+      - CUSTOMER_JIT_URL=http://customer_jit:8001
+      - ACQUIRER_SVC_URL=http://acquirer:8101
+      - VISA_SVC_URL=http://visa:8102
+      - MARQETA_SIM_URL=http://marqeta_simulator:8103
+    volumes:
+      - simulator_data:/data
+    depends_on:
+      - acquirer
+      - customer_jit
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  acquirer:
+    build:
+      context: .
+      dockerfile: Dockerfile.acquirer
+    ports:
+      - "8101:8101"
+    environment:
+      - VISA_URL=http://visa:8102/network/authorize
+    depends_on:
+      - visa
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8101/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  visa:
+    build:
+      context: .
+      dockerfile: Dockerfile.visa
+    ports:
+      - "8102:8102"
+    environment:
+      - MARQETA_URL=http://marqeta_simulator:8103/issuer/authorize
+    depends_on:
+      - marqeta_simulator
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8102/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  marqeta_simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.marqeta_simulator
+    ports:
+      - "8103:8103"
+    environment:
+      - CUSTOMER_JIT_URL=http://customer_jit:8001/jit/authorize
+    depends_on:
+      - customer_jit
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8103/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  customer_jit:
+    build:
+      context: .
+      dockerfile: Dockerfile.customer_jit
+    ports:
+      - "8001:8001"
+    environment:
+      - BLOCKED_MCCS=${BLOCKED_MCCS:-6011,4829}
+      - DAILY_LIMIT_CENTS=${DAILY_LIMIT_CENTS:-0}
+      - VELOCITY_MAX_TXN=${VELOCITY_MAX_TXN:-0}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+volumes:
+  simulator_data:

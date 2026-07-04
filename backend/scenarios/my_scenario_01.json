@@ -1,0 +1,24 @@
+{
+  "id": "my_scenario_01",
+  "name": "my_scenario_01",
+  "description": "Generated authorization for 12500 cents",
+  "event_type": "authorization",
+  "request": {
+    "transaction_id": "TXN_MY_SCENARIO_01",
+    "pan": "4111111111111111",
+    "amount": 12500,
+    "currency": "840",
+    "mcc": "5411",
+    "merchant_name": "Generated Merchant",
+    "merchant_city": "San Francisco",
+    "merchant_state": "CA",
+    "merchant_country": "USA",
+    "pos_entry_mode": "051",
+    "terminal_id": "TERM9999",
+    "acquiring_institution_id": "123456",
+    "forwarding_institution_id": "123456",
+    "datetime": "2026-06-14T20:14:00.272676+00:00"
+  },
+  "expected_network_response_code": "05",
+  "expected_customer_decision": "DECLINED"
+}

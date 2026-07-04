@@ -1,0 +1,16 @@
+network: discover
+bin_ranges: ["6011", "64", "65"]
+mti:
+  auth_request: "0100"
+  auth_response: "0110"
+  reversal: "0420"
+packager: iso-engine/packagers/discover.xml
+private_fields:
+  - { de: 62, name: "Network reference data", format: "ans..255 LLLVAR" }
+  - { de: 63, name: "Network data",           format: "ans..255 LLLVAR" }
+edits:
+  require: [2, 3, 4, 7, 11, 22, 32, 37, 41, 49]
+notes: "D-Payment authorization; network reference data in DE62/DE63."
+private_de_values:
+  62: "DISC_REF_{stan}"
+  63: "DISC_NET_{stan}"

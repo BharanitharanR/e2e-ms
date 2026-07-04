@@ -13,7 +13,7 @@ def init_session_state():
     defaults = {
         # ── Core simulator keys (preserved from original app.py) ────────────
         "iso_mode":           False,
-        "iso_jcf_mapping":    None,
+        "iso_jpf_mapping":    None,
         "suite_result":       None,
         "apdu_log":           [],
         "card_state":         None,
@@ -36,6 +36,10 @@ def init_session_state():
         "ai_last_scenario":   None,
         "ai_last_explanation": None,
         "ai_generating":      False,
+        # Mandate workflow (T2.1-T2.3 — Phase 5)
+        "mandate_proposal":   None,
+        "mandate_network":    "visa",
+        "ai_last_run":        None,
         # Sandbox health cache
         "health_cache":       {},
         # ISO workbench Column 1 DE values

@@ -6,9 +6,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import streamlit as st
 from utils.api_client import api_post
 from utils.session_state import init_session_state
+from utils.theme import inject_theme
 
 init_session_state()
-st.set_page_config(page_title="e2MS — Terminal Emulator", page_icon="📱", layout="wide")
+st.set_page_config(page_title="Paycon e2ePS — Terminal Emulator", page_icon="📱", layout="wide")
+inject_theme()
 
 st.title("📱 NFC / Chip Card Terminal Emulator")
 st.caption(

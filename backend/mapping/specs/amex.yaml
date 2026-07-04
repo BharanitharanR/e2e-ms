@@ -1,0 +1,73 @@
+version: 1
+network: amex
+
+fields:
+  # ── Core transaction ────────────────────────────────────────────────────────
+  - canonical: transaction.amount
+    source:    { de: "4",  transform: n12_to_cents }
+    emv_source: { tag: "9F02", transform: emv_amount }
+
+  - canonical: transaction.processing_code
+    source:    { de: "3",  transform: passthrough }
+
+  - canonical: transaction.stan
+    source:    { de: "11", transform: passthrough }
+
+  - canonical: transaction.rrn
+    source:    { de: "37", transform: passthrough }
+
+  - canonical: transaction.currency_code
+    source:    { de: "49", transform: passthrough }
+    emv_source: { tag: "5F2A", transform: emv_currency }
+
+  # ── Card ────────────────────────────────────────────────────────────────────
+  - canonical: card.pan
+    source:    { de: "2",  transform: passthrough }
+    pii:       true
+    store:     { token: true, last_four: true, hash: sha256 }
+
+  - canonical: card.expiration
+    source:    { de: "14", transform: passthrough }
+
+  # ── Merchant ────────────────────────────────────────────────────────────────
+  - canonical: merchant.mcc
+    source:    { de: "18", transform: passthrough }
+    emv_source: { tag: "9F15", transform: passthrough }
+
+  # ── POS ─────────────────────────────────────────────────────────────────────
+  - canonical: pos.entry_mode
+    source:    { de: "22", transform: passthrough }
+
+  - canonical: pos.terminal_id
+    source:    { de: "41", transform: passthrough }
+
+  - canonical: pos.acquiring_institution_id
+    source:    { de: "32", transform: passthrough }
+
+  # ── EMV / chip ──────────────────────────────────────────────────────────────
+  - canonical: emv.tvr
+    source:    { de: "55", tag: "95" }
+
+  - canonical: emv.cryptogram
+    source:    { de: "55", tag: "9F26" }
+
+  - canonical: emv.atc
+    source:    { de: "55", tag: "9F36" }
+
+  # ── Network-private (Amex) ───────────────────────────────────────────────────
+  - canonical: network.amex.national_data
+    source:    { de: "47", transform: passthrough }
+
+  - canonical: network.amex.private_data
+    source:    { de: "63", transform: passthrough }
+
+validate:
+  - rule: equal
+    a: { de: "4" }
+    b: { tag: "9F02" }
+    on_mismatch: flag
+
+  - rule: equal
+    a: { de: "49" }
+    b: { tag: "5F2A" }
+    on_mismatch: flag

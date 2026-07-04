@@ -6,10 +6,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import streamlit as st
 from utils.api_client import api_get, api_post
 from utils.session_state import init_session_state
-from utils.demo_mode import render_node_diagram, render_playback_step, _DEMO_NODES, _STEP_NODE_MAP
+from utils.theme import inject_theme
+from utils.demo_mode import render_node_diagram, render_playback_step, _STEP_NODE_MAP
 
 init_session_state()
-st.set_page_config(page_title="e2MS — Scenario Lab", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="Paycon e2ePS — Scenario Lab", page_icon="🧬", layout="wide")
+inject_theme()
 
 st.title("🧬 Scenario Lab")
 
@@ -20,10 +22,26 @@ with st.sidebar:
     evt_filter = st.selectbox("Event type", ["(all)", "authorization", "advice", "refund", "reversal"],
                               key="lab_evt")
     st.markdown("---")
+    st.subheader("Network")
+    _NETWORK_OPTIONS = {
+        "(auto — BIN routing)": None,
+        "🔵 Visa":         "visa",
+        "🔴 Mastercard":   "mastercard",
+        "🟢 Amex":         "amex",
+        "🟠 Discover":     "discover",
+    }
+    selected_network_label = st.selectbox(
+        "Force network dialect",
+        list(_NETWORK_OPTIONS.keys()),
+        key="lab_network",
+        help="Override BIN routing and force a specific ISO 8583 network dialect.",
+    )
+    selected_network = _NETWORK_OPTIONS[selected_network_label]
+    st.markdown("---")
     st.subheader("Simulator Mode")
     st.session_state.iso_mode = st.toggle(
         "ISO Simulator Mode", value=st.session_state.iso_mode,
-        help="Show ISO 8583 DE ↔ JCF mapping panel")
+        help="Show ISO 8583 DE ↔ JPF mapping panel")
     st.session_state.demo_mode = st.toggle(
         "Demo Mode", value=st.session_state.demo_mode,
         help="Animated step-by-step transaction replay")
@@ -66,8 +84,11 @@ else:
 
     run_clicked = col_run.button("▶ Run", type="primary", key="lab_run_btn")
     if run_clicked and selected_id:
+        _exec_url = f"/execute/{selected_id}"
+        if selected_network:
+            _exec_url += f"?network={selected_network}"
         with st.spinner("Executing…"):
-            trace = api_post(f"/execute/{selected_id}")
+            trace = api_post(_exec_url)
         if trace and "error" not in trace:
             st.session_state.last_trace = trace
         else:
@@ -105,40 +126,109 @@ if trace and "error" not in trace:
                 with st.expander(f"  Payload (step {step['step']})", expanded=False):
                     st.json(step["payload"])
 
+    # ── Network ISO ↔ JPF contrast panel (T7) ─────────────────────────────
+    iso_msg = trace.get("iso_message", {})
+    jpf_data = trace.get("jpf", {})
+    iso_warnings = trace.get("iso_warnings", [])
+
+    if iso_msg and "error" not in iso_msg:
+        st.markdown("---")
+        _net_badge_colors = {
+            "visa": "#1a1f71", "mastercard": "#eb001b",
+            "amex": "#007ec1", "discover": "#f76f20",
+        }
+        _net = iso_msg.get("network", "visa")
+        _badge_color = _net_badge_colors.get(_net, "#555")
+        st.markdown(
+            f'<h4>🌐 ISO 8583 ↔ JPF — Network: '
+            f'<span style="background:{_badge_color};color:#fff;padding:2px 10px;'
+            f'border-radius:4px;font-size:0.9em">{_net.upper()}</span>'
+            f'&nbsp; MTI: <code>{iso_msg.get("mti","?")}</code>'
+            f'&nbsp; STAN: <code>{iso_msg.get("stan","?")}</code>'
+            f'&nbsp; RRN: <code>{iso_msg.get("rrn","?")}</code>'
+            f'</h4>',
+            unsafe_allow_html=True,
+        )
+
+        if iso_warnings:
+            for w in iso_warnings:
+                st.warning(f"⚠️ {w}")
+
+        iso_col, jpf_col = st.columns(2)
+
+        with iso_col:
+            st.markdown("**📦 ISO 8583 Fields**")
+            private_des = set(str(d) for d in iso_msg.get("private_des", []))
+            fields = iso_msg.get("fields", {})
+            try:
+                import pandas as pd
+                rows_iso = []
+                for de_key in sorted(fields.keys(), key=lambda x: int(x) if x.isdigit() else 999):
+                    is_private = de_key in private_des
+                    rows_iso.append({
+                        "DE": f"DE{de_key}",
+                        "Value": fields[de_key],
+                        "Private": "★" if is_private else "",
+                    })
+                df_iso = pd.DataFrame(rows_iso)
+
+                def _highlight_private(row):
+                    if row["Private"] == "★":
+                        return ["background-color: #fff3cd"] * len(row)
+                    return [""] * len(row)
+
+                st.dataframe(
+                    df_iso.style.apply(_highlight_private, axis=1),
+                    use_container_width=True,
+                    height=420,
+                )
+                st.caption("★ = network-private DE (highlighted)")
+            except ImportError:
+                st.json(fields)
+
+        with jpf_col:
+            st.markdown("**📋 Canonical JPF (dialect-agnostic)**")
+            st.json(jpf_data)
+            if iso_msg.get("packed_hex"):
+                with st.expander("Packed hex (ISO 8583 wire bytes)", expanded=False):
+                    hex_str = iso_msg["packed_hex"]
+                    st.code(hex_str, language="text")
+                    st.caption(f"{len(hex_str) // 2} bytes")
+
 # ── ISO Simulator Mode ────────────────────────────────────────────────────────
 if st.session_state.iso_mode:
     try:
         import pandas as pd
-        from iso_mapping import DEFAULT_ISO_JCF_MAPPING, extract_iso_jcf_values
+        from iso_mapping import DEFAULT_ISO_JPF_MAPPING, extract_iso_jpf_values
         st.markdown("---")
-        if st.session_state.iso_jcf_mapping is None:
-            st.session_state.iso_jcf_mapping = list(DEFAULT_ISO_JCF_MAPPING)
-        with st.expander("🔄 ISO 8583 ↔ JCF Mapping Table (editable)", expanded=True):
+        if st.session_state.iso_jpf_mapping is None:
+            st.session_state.iso_jpf_mapping = list(DEFAULT_ISO_JPF_MAPPING)
+        with st.expander("🔄 ISO 8583 ↔ JPF Mapping Table (editable)", expanded=True):
             st.caption("Edit rows, add/remove DE entries. Changes are session-scoped.")
             edited = st.data_editor(
-                pd.DataFrame(st.session_state.iso_jcf_mapping),
+                pd.DataFrame(st.session_state.iso_jpf_mapping),
                 num_rows="dynamic", use_container_width=True,
                 column_config={
                     "de":          st.column_config.TextColumn("DE #",        width=80),
                     "iso_name":    st.column_config.TextColumn("ISO Name",    width=200),
-                    "jcf_field":   st.column_config.TextColumn("JCF Field",   width=150),
+                    "jpf_field":   st.column_config.TextColumn("JPF Field",   width=150),
                     "description": st.column_config.TextColumn("Description", width=240),
                     "transform":   st.column_config.SelectboxColumn(
                         "Transform", width=150,
                         options=["passthrough","tokenize","format_iso8601",
                                  "extract_time","truncate_25","numeric_to_alpha"]),
                 }, key="iso_tbl_lab")
-            st.session_state.iso_jcf_mapping = edited.to_dict("records")
+            st.session_state.iso_jpf_mapping = edited.to_dict("records")
             if st.button("Reset to defaults", key="iso_reset_lab"):
-                st.session_state.iso_jcf_mapping = list(DEFAULT_ISO_JCF_MAPPING)
+                st.session_state.iso_jpf_mapping = list(DEFAULT_ISO_JPF_MAPPING)
                 st.rerun()
 
         if trace:
-            with st.expander("ISO ↔ JCF Translation — last transaction", expanded=True):
-                rows = extract_iso_jcf_values(
-                    st.session_state.iso_jcf_mapping,
+            with st.expander("ISO ↔ JPF Translation — last transaction", expanded=True):
+                rows = extract_iso_jpf_values(
+                    st.session_state.iso_jpf_mapping,
                     trace.get("request_sent", {}), trace.get("response_received", {}))
-                df_tr = pd.DataFrame(rows)[["de","iso_name","iso_value","jcf_field","jcf_value","transform"]]
+                df_tr = pd.DataFrame(rows)[["de","iso_name","iso_value","jpf_field","jcf_value","transform"]]
                 st.dataframe(df_tr, use_container_width=True)
     except ImportError:
         st.info("ISO mapping module not found — ensure iso_mapping.py is in the frontend directory.")
@@ -157,8 +247,14 @@ if st.session_state.demo_mode:
         demo_scenario_id = selected_id if scenarios else "authorization_approve"
         demo_trace = api_post(f"/execute/{demo_scenario_id}?unique=true")
         if demo_trace and "error" not in demo_trace:
-            speed  = st.session_state.get("demo_speed", 1.5)
-            audit  = demo_trace.get("audit_trail", [])
+            speed   = st.session_state.get("demo_speed", 1.5)
+            audit   = demo_trace.get("audit_trail", [])
+            # T0.3 — extract resolved network for dynamic node label
+            _demo_network = (
+                demo_trace.get("iso_message", {}).get("network")
+                or demo_trace.get("request_sent", {}).get("network")
+                or "visa"
+            )
             n_ph   = st.empty()
             s_ph   = st.empty()
             p_ph   = st.empty()
@@ -168,8 +264,8 @@ if st.session_state.demo_mode:
                     break
                 idx      = (entry.get("step", 1) - 1)
                 node_idx = _STEP_NODE_MAP.get(idx + 1, 0)
-                n_ph.markdown(render_node_diagram(node_idx), unsafe_allow_html=True)
-                render_playback_step(s_ph, entry, entry.get("step"), len(audit))
+                n_ph.markdown(render_node_diagram(node_idx, network=_demo_network), unsafe_allow_html=True)
+                render_playback_step(entry, entry.get("step"), len(audit), network=_demo_network)
                 payload = entry.get("payload") or {}
                 if payload:
                     lines = json.dumps(payload, indent=2).splitlines()

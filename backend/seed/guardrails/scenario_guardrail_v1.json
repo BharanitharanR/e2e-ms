@@ -1,0 +1,22 @@
+{
+  "_id": "scenario_guardrail_v1",
+  "required_fields": [
+    "id",
+    "name",
+    "description",
+    "event_type",
+    "request",
+    "expected_network_response_code",
+    "expected_customer_decision"
+  ],
+  "allowed_event_types": [
+    "authorization",
+    "refund",
+    "reversal",
+    "advice"
+  ],
+  "allowed_decisions": [
+    "APPROVED",
+    "DECLINED"
+  ]
+}
